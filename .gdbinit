@@ -25,6 +25,12 @@ define do_load
 	eval "monitor reg pc %p", &Reset_Handler
 end
 
+define C
+	make
+	do_load
+	continue
+end
+
 target remote localhost:3333
 file "sam4s_fw.elf"
 
