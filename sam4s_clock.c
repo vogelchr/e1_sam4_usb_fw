@@ -214,15 +214,6 @@ sam4s_clock_init()
 	PMC->PMC_USB = PMC_USB_USBDIV(2) | PMC_USB_USBS; /* USBS=1(PLLB) */
 	PMC->PMC_SCER |= PMC_SCDR_UDP;
 
-	/* output PLLA (131.072 MHz MHz) / 64 = 2.048 MHz, to be output on...  */
-	/* PCK1 = PA21, Function B (CLK2018, to LUI MCLK input) */
-	PMC->PMC_PCK[1] = PMC_PCK_CSS_PLLA_CLK | PMC_PCK_PRES_CLK_64;
-	PMC->PMC_SCER = PMC_SCER_PCK1;
-
-	/* PCK2 = PB3, Function B (TX_CLK), routed to SAM4S PA16(TK) and LIU  */
-	PMC->PMC_PCK[2] = PMC_PCK_CSS_PLLA_CLK | PMC_PCK_PRES_CLK_64;
-	PMC->PMC_SCER = PMC_SCER_PCK2;
-
 	/* enable SysTick timer */
 	SysTick->CTRL= 0; /* disable */
 	SysTick->LOAD = (F_MCK_HZ / SAM4S_CLOCK_HZ)-1;
