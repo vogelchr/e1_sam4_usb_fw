@@ -16,8 +16,8 @@
 #define MIN(a,b) ((a)<(b)?(a):(b))
 #endif
 
-#define GPS_STEER_NOMINAL_CLKS 48000000UL
-#define GPS_STEER_DAC_PERIODS         4
+#define GPS_STEER_NOMINAL_CLKS     (F_MCK_HZ / 2)
+#define GPS_STEER_DAC_PERIODS      4
 #define GPS_STEER_DAC_RANGE       (SAM4S_DAC_RANGE*1024)
 #define GPS_STEER_DAC_MAXVAL      (GPS_STEER_DAC_RANGE-1)
 
@@ -70,7 +70,7 @@ gps_steer_dac_set(uint32_t v)
 	if (v >= GPS_STEER_DAC_MAXVAL)
 		v = GPS_STEER_DAC_MAXVAL;
 	gps_steer_dac = v;
-	sam4s_dac_update(1, v >> 10);
+	sam4s_dac_update(0, v >> 10);
 }
 
 void
@@ -129,9 +129,10 @@ gps_steer_poll()
 	gps_steer_last_ts_tick = ts_now_tick;
 
 	if (gps_steer_mode != GPS_STEER_INIT)
-		printf("GPS:%s %d %d %+5ld %8ld",
+		printf("GPS:%s(%d) cnt=%d delta=%+5ld dac=%8ld (dac-center=%ld)",
 			gps_steer_mode_names[gps_steer_mode], gps_steer_mode,
-			gps_steer_mode_cnt, ts_capt_delta_offs, gps_steer_dac);
+			gps_steer_mode_cnt, ts_capt_delta_offs, gps_steer_dac,
+			gps_steer_dac - gps_steer_dac_center);
 
 	switch (gps_steer_mode) {
 
@@ -234,9 +235,9 @@ gps_steer_poll()
 
 		gps_steer_dac_center -= ts_capt_delta_offs * gps_steer_dac_per_offs / 4;
 		dacv = gps_steer_dac_center - gps_steer_dac_per_offs * ts_capt_delta_offs * 3 / 4;
+		dacv = MAX((int)0, MIN((int)GPS_STEER_DAC_MAXVAL, (int)dacv));
 
-		gps_steer_dac_set(
-			MAX((int)0, MIN((int)GPS_STEER_DAC_MAXVAL, (int)dacv)));
+		gps_steer_dac_set(dacv);
 	}
 
 	gps_steer_last_ts_offs = ts_capt_delta_offs;
