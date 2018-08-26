@@ -30,8 +30,8 @@ sam4s_dac_init()
 	/* enable both channels */
 	DACC->DACC_CHER = DACC_CHER_CH1 | DACC_CHER_CH0;
 
-	sam4s_dac_update(0, SAM4S_DAC_RANGE/2);
-	sam4s_dac_update(1, SAM4S_DAC_RANGE/2);
+	sam4s_dac_update(0, 2258); /* good value for our board */
+	sam4s_dac_update(1, 0);
 }
 
 /* See 43.6.5 Channel Selection */
