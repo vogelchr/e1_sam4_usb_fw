@@ -24,13 +24,14 @@ void
 sam4s_dac_init()
 {
 	sam4s_clock_peripheral_onoff(ID_DACC, 1 /* on */);
+	DACC->DACC_CR = DACC_CR_SWRST;
 	/* DACC_MR_TAG_EN: data register [13:12] is channel number */
 	DACC->DACC_MR = DACC_MR_ONE | DACC_MR_TAG_EN;
 	/* enable both channels */
 	DACC->DACC_CHER = DACC_CHER_CH1 | DACC_CHER_CH0;
 
-	sam4s_dac_update(0, 0);
-	sam4s_dac_update(1, 0);
+	sam4s_dac_update(0, SAM4S_DAC_RANGE/2);
+	sam4s_dac_update(1, SAM4S_DAC_RANGE/2);
 }
 
 /* See 43.6.5 Channel Selection */
