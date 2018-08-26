@@ -31,8 +31,6 @@
 
 #include <stdio.h>
 
-unsigned char e1_rxbuf_aligned[sizeof(sam4s_ssc_rxbuf)];
-
 unsigned char rxbuf[4] = {0, 0, 0, 0};
 unsigned char txbuf[4] = {0, 0, 0, 0};
 
@@ -130,8 +128,30 @@ main()
 
 	ssc_realign_init();
 
-	for (i=0; i<(int)sizeof(sam4s_ssc_txbuf); i++)
-		sam4s_ssc_txbuf[i] = i & 0xff;
+	/* idle pattern */
+	for (i=0; i<(int)sizeof(sam4s_ssc_tx_buf); i++)
+		sam4s_ssc_tx_buf[i] = 0x00;
+
+	for (i=0; i<SAM4S_SSC_BUF_TX_NFRAMES; i++) {
+		int offs = i * SAM4S_SSC_FRAME_BYTES;
+		if (!(i % 2)) /* even frame */
+			sam4s_ssc_tx_buf[offs] = 0x1b; // C 0 0 1 1 0 1 1
+		else /* odd frame */
+			sam4s_ssc_tx_buf[offs] = 0x40; // 0 1 A S S S S S
+		sam4s_ssc_tx_buf[offs + 15] = 0x00;    // 0 0 0 0 S A S S
+	}
+
+#if 0
+	printf("TX Buffer:\r\n");
+	for (i=0; i<sizeof(sam4s_ssc_tx_buf); i++) {
+		printf("%02x", sam4s_ssc_tx_buf[i]);
+		if (3 == (i % 4))
+			printf(" ");
+		if (15 == (i % 16))
+			printf("\r\n");
+	}
+#endif
+
 	sam4s_ssc_init();
 	sam4s_spi_init();
 
@@ -146,11 +166,20 @@ main()
 
 		gps_steer_poll();
 
-		k = sam4s_uart0_console_rx();
-		if (k != -1) {
-			printf("Got char %c (0x%02x).\r\n",
-				k>32 && k<127?k:'?', k);
+		if (sam4s_ssc_rx_frame_ctr > 16) {
+			/* we have 4 buffers on rx */
+			if (((sam4s_ssc_rx_buf[0 ] & 0x7f) != 0x1b) ||
+			    ((sam4s_ssc_rx_buf[32] & 0xc0) != 0x40) ||
+    			    ((sam4s_ssc_rx_buf[64] & 0x7f) != 0x1b) ||
+			    ((sam4s_ssc_rx_buf[96] & 0xc0) != 0x40)) {
+			    	printf("s\r\n");
+				sam4s_ssc_realign_adjust(0);
+			}
 		}
+
+		k = sam4s_uart0_console_rx();
+		if (k == -1)
+			continue;
 
 		if (k == 'c') {
 			struct reg_pair *p;
@@ -194,6 +223,35 @@ main()
 		if (k == 'd') {
 			printf("sam4s_ssc: %lu tx irqs, %lu rx irqs\r\n",
 				sam4s_ssc_tx_irq_ctr,sam4s_ssc_rx_irq_ctr);
+		}
+
+		if (k == '0') {
+			sam4s_ssc_realign_reset(0);
+			printf("Frame realignment reset.\r\n");
+		}
+
+		if (k == '+' || k == '-') {
+			unsigned int align_bits = sam4s_ssc_realign_adjust(k == '-');
+			printf("Alignment changed to %u.\r\n", align_bits);
+		}
+
+		if (k == 'r') {
+			printf("last rx: %d, rx_irq %lu tx_irq %lu under %lu\r\n",
+				sam4s_ssc_rx_last_frame,
+				sam4s_ssc_rx_irq_ctr,
+				sam4s_ssc_tx_irq_ctr,
+				sam4s_ssc_irq_underflow_ctr);
+			for (i=0; i<sizeof(sam4s_ssc_rx_buf); i++) {
+				if ((i % SAM4S_SSC_FRAME_BYTES) == 0)
+					printf("Frame %d:", i / SAM4S_SSC_FRAME_BYTES);
+				if ((i % SAM4S_SSC_FRAME_BYTES) == SAM4S_SSC_FRAME_BYTES/2)
+					printf("        ");
+				if (0 == i % 4)
+					printf(" ");
+				printf("%02x", sam4s_ssc_rx_buf[i]);
+				if (i % 16 == 15)
+					printf("\r\n");
+			}
 		}
 
 	}
