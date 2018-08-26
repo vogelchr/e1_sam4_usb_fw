@@ -27,7 +27,7 @@
 /* ==== TRANSMITTING ==== */
 
 /* externally visible buffer for data that needs to be transmitted */
-unsigned char sam4s_ssc_txbuf[SAM4S_SSC_BUF_TX_NFRAMES*SAM4S_SSC_FRAME_BYTES];
+unsigned char sam4s_ssc_tx_buf[SAM4S_SSC_BUF_TX_NFRAMES*SAM4S_SSC_FRAME_BYTES];
 static int sam4s_ssc_tx_curr_frame; /* internally used: currently active frame */
 int sam4s_ssc_tx_last_frame;        /* externally used: last successfully sent frame */
 
@@ -48,21 +48,62 @@ int sam4s_ssc_rx_last_frame;        /* ext. used: last sucecssfully read & reali
 static unsigned char *sam4s_ssc_rx_writep; /* next char to be written */
 static unsigned char *sam4s_ssc_rx_buf_end = sam4s_ssc_rx_buf + sizeof(sam4s_ssc_rx_buf);
 static uint32_t sam4s_ssc_rx_shiftreg;     /* carry fractional octets over... */
-static int sam4s_ssc_rx_align;             /* number of bits aligned data trains input data */
+static unsigned int sam4s_ssc_rx_align;    /* number of bits aligned data trains input data */
 
 /* ==== STATISTICS ==== */
 
+volatile unsigned long sam4s_ssc_rx_frame_ctr; /* statistics */
 unsigned long sam4s_ssc_rx_irq_ctr; /* statistics */
 unsigned long sam4s_ssc_tx_irq_ctr; /* statistics */
+unsigned long sam4s_ssc_irq_underflow_ctr;
+
+unsigned int
+sam4s_ssc_realign_adjust(int go_backwards)
+{
+	unsigned int align, fractional_align;
+
+	NVIC_DisableIRQ(SSC_IRQn);
+
+	if (go_backwards) {
+		if (sam4s_ssc_rx_align == 0)
+			sam4s_ssc_rx_align = 8*SAM4S_SSC_FRAME_BYTES-1;
+		else
+			sam4s_ssc_rx_align--;
+
+		/* we went over byte boundary (0->7), adjust write ptr */
+		if ((sam4s_ssc_rx_align % 8) == 7) {
+			if (sam4s_ssc_rx_writep == sam4s_ssc_rx_buf)
+				sam4s_ssc_rx_writep = sam4s_ssc_rx_buf_end;
+			sam4s_ssc_rx_writep--;
+		}
+	} else {
+		if (sam4s_ssc_rx_align == 8*SAM4S_SSC_FRAME_BYTES-1)
+			sam4s_ssc_rx_align = 0;
+		else
+			sam4s_ssc_rx_align++;
+
+		/* we went over byte boundary (7->0), adjust write ptr */
+		if ((sam4s_ssc_rx_align % 8) == 0) {
+			sam4s_ssc_rx_writep++;
+			if (sam4s_ssc_rx_writep == sam4s_ssc_rx_buf_end)
+				sam4s_ssc_rx_writep = sam4s_ssc_rx_buf;
+		}
+	}
+
+	sam4s_ssc_rx_frame_ctr = 0;
+
+	NVIC_EnableIRQ(SSC_IRQn);
+	return sam4s_ssc_rx_align;
+}
 
 void
-sam4s_ssc_realign_reset(int align)
+sam4s_ssc_realign_reset(unsigned int align)
 {
 	int i;
 
-	align = align % SAM4S_SSC_FRAME_BYTES;
+	align = align % (SAM4S_SSC_FRAME_BYTES * 8);
 
-	__disable_irq();
+	NVIC_DisableIRQ(SSC_IRQn);
 
 	sam4s_ssc_rx_align = align;
 	sam4s_ssc_rx_last_frame = -1;
@@ -72,7 +113,7 @@ sam4s_ssc_realign_reset(int align)
 	for (i=0; i<SAM4S_SSC_FRAME_BYTES; i++)
 		sam4s_ssc_rx_buf[i] = 0;
 
-	__enable_irq();
+	NVIC_EnableIRQ(SSC_IRQn);
 }
 
 /* to be called by the ISR */
@@ -96,6 +137,7 @@ sam4s_ssc_realign_frame(unsigned char *readp)
 	sam4s_ssc_rx_shiftreg = shiftreg;
 	sam4s_ssc_rx_writep = writep;
 	sam4s_ssc_rx_last_frame = (sam4s_ssc_rx_last_frame + 1) % SAM4S_SSC_BUF_RX_NFRAMES;
+	sam4s_ssc_rx_frame_ctr++;
 }
 
 void
@@ -107,7 +149,7 @@ SSC_Handler()
 	if (SSC->SSC_SR & SSC_SR_ENDRX) {
 		int cp = sam4s_ssc_rxraw_curr_frame;
 
-		sam4s_ssc_realign_frame(&sam4s_ssc_rxraw_buf[cp]);
+		sam4s_ssc_realign_frame(&sam4s_ssc_rxraw_buf[cp*SAM4S_SSC_FRAME_BYTES]);
 
 		/* this is the period that is currently being received */
 		cp = (cp + 1) % SAM4S_SSC_BUF_RXRAW_NFRAMES;
@@ -115,7 +157,7 @@ SSC_Handler()
 
 		/* this is the next period that will be received */
 		cp = ( cp + 1 ) % SAM4S_SSC_BUF_RXRAW_NFRAMES;
-		PDC_SSC->PERIPH_RNPR = (uint32_t) &sam4s_ssc_rxraw_buf[cp * SAM4S_SSC_FRAME_BYTES];
+		PDC_SSC->PERIPH_RNPR = (uint32_t) &sam4s_ssc_rxraw_buf[cp*SAM4S_SSC_FRAME_BYTES];
 		PDC_SSC->PERIPH_RNCR = SAM4S_SSC_FRAME_BYTES;
 
 		/* debug */
@@ -125,19 +167,23 @@ SSC_Handler()
 
 	if (SSC->SSC_SR & SSC_SR_ENDTX) {
 		int cp = sam4s_ssc_tx_curr_frame;
-	
+
+		if (SSC->SSC_SR & SSC_SR_TXBUFE)
+			sam4s_ssc_irq_underflow_ctr++;
+
 		sam4s_ssc_tx_last_frame = cp;
 
 		cp = (cp + 1) % SAM4S_SSC_BUF_TX_NFRAMES;
 		sam4s_ssc_tx_curr_frame = cp;
 
 		cp = ( cp + 1 ) % SAM4S_SSC_BUF_TX_NFRAMES;
-		PDC_SSC->PERIPH_TNPR = (uint32_t) &sam4s_ssc_txbuf[cp * SAM4S_SSC_FRAME_BYTES];
+		PDC_SSC->PERIPH_TNPR = (uint32_t) &sam4s_ssc_tx_buf[cp * SAM4S_SSC_FRAME_BYTES];
 		PDC_SSC->PERIPH_TNCR = SAM4S_SSC_FRAME_BYTES;
+
+
 
 		sam4s_ssc_tx_irq_ctr++;
 		sam4s_pinmux_gpio_set(SAM4S_PINMUX_PA(26),sam4s_ssc_tx_irq_ctr & 1);
-
 	}
 }
 
@@ -163,11 +209,13 @@ sam4s_ssc_init()
 
 	/* RK is an input, receive clock */
 	SSC->SSC_RCMR = SSC_RCMR_CKS_RK;
-	SSC->SSC_RFMR = SSC_RFMR_DATLEN(7);
+	/* 8 bit data, MSB first */
+	SSC->SSC_RFMR = SSC_RFMR_DATLEN(7) | SSC_RFMR_MSBF;
 
 	/* TK is an output, transmit clock */
 	SSC->SSC_TCMR = SSC_TCMR_CKS_MCK | SSC_TCMR_CKO_CONTINUOUS | SSC_TCMR_CKI;
-	SSC->SSC_TFMR = SSC_TFMR_DATLEN(7);
+	/* 8 bit data, MSB first */
+	SSC->SSC_TFMR = SSC_TFMR_DATLEN(7) | SSC_TFMR_MSBF;
 
 	/* enable receiver and transmitter */
 	SSC->SSC_CR = SSC_CR_TXEN | SSC_CR_RXEN;
@@ -180,18 +228,21 @@ sam4s_ssc_init()
 
 	/* enable DMA for SSC, receive and transmit...
 	  first next pointer register, then pointer register and counters */
-	PDC_SSC->PERIPH_RNPR = (uint32_t)&sam4s_ssc_rxraw_buf[SAM4S_SSC_FRAME_BYTES];
-	PDC_SSC->PERIPH_RNCR = SAM4S_SSC_FRAME_BYTES;
 	PDC_SSC->PERIPH_RPR = (uint32_t)&sam4s_ssc_rxraw_buf;
 	PDC_SSC->PERIPH_RCR = SAM4S_SSC_FRAME_BYTES;
+	PDC_SSC->PERIPH_RNPR = (uint32_t)&sam4s_ssc_rxraw_buf[SAM4S_SSC_FRAME_BYTES];
+	PDC_SSC->PERIPH_RNCR = SAM4S_SSC_FRAME_BYTES;
 
-	PDC_SSC->PERIPH_TNPR = (uint32_t)&sam4s_ssc_txbuf[SAM4S_SSC_FRAME_BYTES];
-	PDC_SSC->PERIPH_TNCR = SAM4S_SSC_FRAME_BYTES;
-	PDC_SSC->PERIPH_TPR = (uint32_t)&sam4s_ssc_txbuf;
+	PDC_SSC->PERIPH_TPR = (uint32_t)&sam4s_ssc_tx_buf;
 	PDC_SSC->PERIPH_TCR = SAM4S_SSC_FRAME_BYTES;
+	PDC_SSC->PERIPH_TNPR = (uint32_t)&sam4s_ssc_tx_buf[SAM4S_SSC_FRAME_BYTES];
+	PDC_SSC->PERIPH_TNCR = SAM4S_SSC_FRAME_BYTES;
 
 	/* enable DMA on Rx and Tx, then enable interrupts */
 	PDC_SSC->PERIPH_PTCR = PERIPH_PTCR_RXTEN | PERIPH_PTCR_TXTEN;
 	SSC->SSC_IER = SSC_IER_ENDTX| SSC_IER_ENDRX;
+
+	/* set highest priority */
+	NVIC_SetPriority (SSC_IRQn, (1UL << __NVIC_PRIO_BITS) - 1UL);
 	NVIC_EnableIRQ(SSC_IRQn);
 }
