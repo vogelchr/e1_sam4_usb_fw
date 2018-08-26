@@ -54,6 +54,8 @@ static uint32_t gps_steer_dac;          /* current DAC value */
 static int32_t gps_steer_dac_per_offs;  /* DAC correction per capture offset */
 static uint32_t gps_steer_dac_center;   /* integrator for DAC center value */
 
+static unsigned long gps_steer_nopps_cnt = 0; /* suppress gps messages after 3 counts */
+
 static void
 gps_steer_reset()
 {
@@ -98,7 +100,12 @@ gps_steer_poll()
 	if (!(flags & SAM4S_TIMER_CAPT_RISING)) {
 		if (ts_delta_tick > 125) {
 			gps_steer_reset();
-			printf("gps_steer: no pps!\r\n");
+			if (gps_steer_nopps_cnt < 3)
+				printf("gps_steer: no pps!\r\n");
+			if (gps_steer_nopps_cnt == 3)
+				printf("gps_steer: no pps (last message)!\r\n");
+			gps_steer_nopps_cnt++;
+			gps_steer_last_ts_tick = ts_now_tick;
 		}
 		return;
 	}
@@ -108,6 +115,8 @@ gps_steer_poll()
 		printf("gps_steer: runt pulse!\r\n");
 		return;
 	}
+
+	gps_steer_nopps_cnt=0;
 
 	/* modes use this counter differently, but all expect it to count
 	   down, one per captured pulse */
@@ -129,7 +138,7 @@ gps_steer_poll()
 	gps_steer_last_ts_tick = ts_now_tick;
 
 	if (gps_steer_mode != GPS_STEER_INIT)
-		printf("GPS:%s(%d) cnt=%d delta=%+5ld dac=%8ld (dac-center=%ld)",
+		printf("GPS:%s(%d) cnt=%d delta=%+5ld dac=%8ld (offs=%ld)\r\n",
 			gps_steer_mode_names[gps_steer_mode], gps_steer_mode,
 			gps_steer_mode_cnt, ts_capt_delta_offs, gps_steer_dac,
 			gps_steer_dac - gps_steer_dac_center);
@@ -241,6 +250,4 @@ gps_steer_poll()
 	}
 
 	gps_steer_last_ts_offs = ts_capt_delta_offs;
-
-	printf("\r\n");
 }
