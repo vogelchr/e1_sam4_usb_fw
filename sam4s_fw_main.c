@@ -25,6 +25,7 @@
 #include "sam4s_ssc.h"
 #include "sam4s_clock.h"
 #include "sam4s_spi.h"
+#include "sam4s_usb.h"
 
 #include "gps_steer.h"
 
@@ -151,7 +152,8 @@ main()
 
 	sam4s_ssc_init();
 	sam4s_spi_init();
-
+	sam4s_usb_init();
+	
 	gps_steer_init();
 
 	printf("=============\r\n");
