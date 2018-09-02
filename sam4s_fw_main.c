@@ -25,7 +25,6 @@
 #include "sam4s_ssc.h"
 #include "sam4s_clock.h"
 #include "sam4s_spi.h"
-#include "ssc_realign.h"
 
 #include "gps_steer.h"
 
@@ -125,8 +124,6 @@ main()
 	__enable_irq();
 
 	sam4s_uart0_console_init();
-
-	ssc_realign_init();
 
 	/* idle pattern */
 	for (i=0; i<(int)sizeof(sam4s_ssc_tx_buf); i++)
