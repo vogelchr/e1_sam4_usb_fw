@@ -7,8 +7,6 @@
  *       are little endian, and we don't convert!)
  */
 
-#define DESCRIPTOR_TYPE_DEV 0x04
-
 const struct libusb_device_descriptor sam4s_usb_descr_dev = {
 	.bLength = sizeof(sam4s_usb_descr_dev),
 	.bDescriptorType = LIBUSB_DT_DEVICE,
@@ -37,6 +35,40 @@ const struct libusb_config_descriptor sam4s_usb_descr_cfg = {
 	.bMaxPower = 250, /* 500 mA in units of 2mA */
 };
 
+const struct libusb_interface_descriptor sam4s_usb_descr_int = {
+	.bLength = sizeof(sam4s_usb_descr_int),
+	.bDescriptorType = LIBUSB_DT_INTERFACE,
+	.bInterfaceNumber = 1,
+	.bAlternateSetting = 1,
+	.bNumEndpoints = 2,
+	.bInterfaceClass = 0,
+	.bInterfaceSubClass = 0,
+	.bInterfaceProtocol = 0,
+	.iInterface =0,
+};
+
+const struct libusb_endpoint_descriptor sam4s_usb_descr_ep1 = {
+	.bLength = sizeof(sam4s_usb_descr_ep1),
+	.bDescriptorType = LIBUSB_DT_ENDPOINT,
+	.bEndpointAddress = 1,
+	.bmAttributes = 0,
+	.wMaxPacketSize = 128,
+	.bInterval = 0,
+	.bRefresh = 0,
+	.bSynchAddress = 0
+};
+
+const struct libusb_endpoint_descriptor sam4s_usb_descr_ep2 = {
+	.bLength = sizeof(sam4s_usb_descr_ep1),
+	.bDescriptorType = LIBUSB_DT_ENDPOINT,
+	.bEndpointAddress = 2,
+	.bmAttributes = 0,
+	.wMaxPacketSize = 128,
+	.bInterval = 0,
+	.bRefresh = 0,
+	.bSynchAddress = 0
+};
+
 struct libusb_descriptor_common_hdr {
 	uint8_t  bLength;
 	uint8_t  bDescriptorType;
@@ -45,6 +77,9 @@ struct libusb_descriptor_common_hdr {
 const void * sam4s_usb_descriptors_table[] = {
 	&sam4s_usb_descr_dev,
 	&sam4s_usb_descr_cfg,
+	&sam4s_usb_descr_int,
+	&sam4s_usb_descr_ep1,
+	&sam4s_usb_descr_ep2
 };
 
 const void *

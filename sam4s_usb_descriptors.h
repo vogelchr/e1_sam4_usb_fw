@@ -71,6 +71,8 @@ struct libusb_config_descriptor {
 	uint8_t  bMaxPower;
 } __attribute__((packed));
 
+/* we keep pointers to all descriptors in this table, and rely on the
+   fact that they all start with a common bLength, bDescriptorType layout */
 extern const void * sam4s_usb_descriptors_table[];
 
 /* return descriptor number num (starting at 1) of type dt,
