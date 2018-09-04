@@ -36,6 +36,16 @@
 
 #define USB_REQ_DIR_IN (1<<7)  /* highest bit: 1: in, 0: out */
 
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+#define END_OF_ARR(x)  (&((x)[ARRAY_SIZE(x)])
+
+#define SAM4S_USB_TRACEBUF_NENTRIES 128
+uint32_t sam4s_usb_tracebuf[SAM4S_USB_TRACEBUF_NENTRIES];
+static const uint32_t *sam4s_usb_tracebuf_end = END_OF_ARR(sam4s_usb_tracebuf);
+uint32_t *sam4s_usb_tracebuf_writep;
+
+
+
 struct usb_ctrlreq {
 	uint8_t type;
 	uint8_t req;
