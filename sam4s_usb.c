@@ -55,15 +55,21 @@ enum sam4s_usb_ep_state {
 	SAM4S_USB_EP_EP0_ADDRESS
 };
 
+/* §40.6.3, Fig 40-14 USB Device Status Diagram */
+
 enum sam4s_usb_dev_state {
-	SAM4S_USB_DEV_SUSPENDED,
-	SAM4S_USB_DEV_POWERED,
-	SAM4S_USB_DEV_DEFAULT,
-	SAM4S_USB_DEV_ADDRESSED,
-	SAM4S_USB_DEV_CONFIGURED
+	SAM4S_USB_DEV_POWERED = 0,
+	SAM4S_USB_DEV_DEFAULT = 1,
+	SAM4S_USB_DEV_ADDRESSED = 2,
+	SAM4S_USB_DEV_CONFIGURED = 3,
+	SAM4S_USB_DEV_SUSPENDED = 0x80,  /* not used directly, but or-ed */
+	SAM4S_USB_DEV_SUSP_POWERED = SAM4S_USB_DEV_POWERED | SAM4S_USB_DEV_SUSPENDED,
+	SAM4S_USB_DEV_SUSP_DEFAULT = SAM4S_USB_DEV_DEFAULT | SAM4S_USB_DEV_SUSPENDED,
+	SAM4S_USB_DEV_SUSP_ADDRESSED = SAM4S_USB_DEV_ADDRESSED | SAM4S_USB_DEV_SUSPENDED,
+	SAM4S_USB_DEV_SUSP_CONFIGURED = SAM4S_USB_DEV_CONFIGURED | SAM4S_USB_DEV_SUSPENDED
 };
 
-/* state of our endpoints */
+/* state of our endpoints and device */
 enum sam4s_usb_ep_state sam4s_usb_ep_state[SAM4S_USB_NENDP];
 enum sam4s_usb_dev_state sam4s_usb_dev_state;
 
@@ -105,14 +111,16 @@ static void
 sam4s_usb_setaddr(unsigned int addr)
 {
 	if (addr) {
-		/* toto addressed state */
-		UDP->UDP_FADDR = addr | UDP_GLB_STAT_FADDEN;
+		/* to addressed state */
+		UDP->UDP_FADDR = addr | UDP_FADDR_FEN;
 		UDP->UDP_GLB_STAT = (UDP->UDP_GLB_STAT | UDP_GLB_STAT_FADDEN) &
 			~UDP_GLB_STAT_CONFG;
+		sam4s_usb_dev_state = SAM4S_USB_DEV_ADDRESSED;
 	} else {
 		UDP->UDP_FADDR = UDP_FADDR_FEN;
 		UDP->UDP_GLB_STAT = UDP->UDP_GLB_STAT &
 			~(UDP_GLB_STAT_CONFG | UDP_GLB_STAT_FADDEN);
+		sam4s_usb_dev_state = SAM4S_USB_DEV_DEFAULT;
 	}
 }
 
@@ -159,7 +167,7 @@ sam4s_usb_handle_epint(unsigned int ep)  /* nuttx: sam_ep_interrupt */
 	   conduct the transfer of data from the device to the host */
 
 	/* Data IN transaction is achieved, acknowledged by the Host */
-	if (csr & UDP_CSR_TXCOMP) {
+	if (csr & UDP_CSR_TXCOMP) { /* transmission has completed */
 		sam4s_usb_csr_clr(ep, UDP_CSR_TXCOMP);
 
 		/* completion of a normal write request */
@@ -173,7 +181,6 @@ sam4s_usb_handle_epint(unsigned int ep)  /* nuttx: sam_ep_interrupt */
 			/* error, unexpected state! */
 		}
 		*state = SAM4S_USB_EP_IDLE;
-
 	}
 
 	/* in case both banks have data, we have to choose the order
@@ -246,7 +253,7 @@ UDP_Handler()
 			UDP->UDP_ICR = UDP_ICR_RXSUSP;
 			/* XXX suspend board, not implemented! */
 
-			sam4s_usb_dev_state = SAM4S_USB_DEV_SUSPENDED;
+			sam4s_usb_dev_state |= SAM4S_USB_DEV_SUSPENDED;
 			break;
 		}
 
@@ -258,15 +265,14 @@ UDP_Handler()
 
 		if (irq_pending & (UDP_ISR_RXRSM|UDP_ISR_WAKEUP)) {
 			/* XXX wakeup board, not implemented! */
+
+			/* acknowledge interrupt, disable wakeup, enable suspend */
 			UDP->UDP_ICR = (UDP_ICR_WAKEUP|UDP_ICR_RXRSM|UDP_ICR_WAKEUP);
-			/* disable wakeup interrupt */
 			UDP->UDP_IDR = UDP_IDR_RXRSM | UDP_IDR_WAKEUP;
-			/* enable suspend interrupt */
 			UDP->UDP_IER = UDP_IER_RXSUSP;
 
 			/* fix me, should be state saved during suspend time */
-			sam4s_usb_dev_state = SAM4S_USB_DEV_DEFAULT;
-
+			sam4s_usb_dev_state &= ~SAM4S_USB_DEV_SUSPENDED;
 			break;
 		}
 
@@ -275,6 +281,7 @@ UDP_Handler()
 			break;
 		}
 
+		/* handle endpoint interrupts */
 		if (irq_pending & UDP_IxR_EPxINT) {
 			for (i=0; i<SAM4S_USB_NENDP; i++) {
 				if (irq_pending & UDP_IxR_EPnINT(i))
@@ -298,7 +305,8 @@ sam4s_usb_ep_reset(unsigned int ep)
 	if (ep >= SAM4S_USB_NENDP)
 		return;
 
-	UDP->UDP_IDR =  1<<ep;   /* disable interrupt */
+	UDP->UDP_IDR =  UDP_IxR_EPnINT(ep);   /* disable interrupt */
+	UDP->UDP_CSR[ep] = 0;
 	UDP->UDP_RST_EP = 1<<ep; /* reset endpoint */
 	UDP->UDP_RST_EP = 0;
 
@@ -315,11 +323,12 @@ sam4s_usb_full_reset()
 	sam4s_usb_dev_state = SAM4S_USB_DEV_DEFAULT;
 	for (i=0; i<SAM4S_USB_NENDP; i++) {
 		sam4s_usb_ep_reset(i);
-		UDP->UDP_CSR[i] = 0;
 	}
 
-	UDP->UDP_ICR = UDP_ICR_WAKEUP | UDP_ICR_ENDBUSRES | UDP_ICR_SOFINT | UDP_ICR_RXSUSP;
-	UDP->UDP_IDR = UDP_ICR_SOFINT | UDP_ICR_RXSUSP | UDP_IxR_EPxINT;
+	UDP->UDP_IDR = UDP->UDP_IMR; /* disable all interrupts */
+	UDP->UDP_ICR = UDP->UDP_ISR; /* acknowledge all interrupts */
+	/* enable interrupts for wakeup, busreset, receive suspend */
+	UDP->UDP_ICR = UDP_ICR_WAKEUP | UDP_ICR_ENDBUSRES | UDP_ICR_RXSUSP;
 	UDP->UDP_IER = UDP_IER_WAKEUP | UDP_IER_RXSUSP | UDP_IER_EP0INT;
 }
 
