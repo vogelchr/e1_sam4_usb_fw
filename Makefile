@@ -23,7 +23,8 @@ CPPFLAGS=-D$(CHIP_CPP)=1 -DSAM4S=1 -DF_MCK_HZ=110592000 \
 
 OBJECTS=startup_sam4s.o newlib_syscalls.o sam4s_fw_main.o gps_steer.o \
 	sam4s_clock.o sam4s_uart0_console.o sam4s_pinmux.o sam4s_dac.o sam4s_timer.o \
-	sam4s_ssc.o sam4s_spi.o sam4s_usb.o sam4s_usb_descriptors.o
+	sam4s_ssc.o sam4s_spi.o sam4s_usb.o sam4s_usb_descriptors.o \
+	trace_util.o
 
 all : sam4s_fw.elf
 

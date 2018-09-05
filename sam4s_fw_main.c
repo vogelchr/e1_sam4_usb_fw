@@ -20,6 +20,7 @@
 
 #include <sam4s4c.h>
 
+#include "trace_util.h"
 #include "sam4s_uart0_console.h"
 #include "sam4s_pinmux.h"
 #include "sam4s_ssc.h"
@@ -88,6 +89,8 @@ main()
 
 	/* disable watchdog */
 	WDT->WDT_MR = WDT_MR_WDDIS;
+
+	trace_util_init();
 
 	sam4s_pinmux_init();
 	/* Port PB1 is VCXO_EN */
