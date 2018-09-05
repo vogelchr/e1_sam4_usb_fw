@@ -108,6 +108,8 @@ unsigned char sam4s_usb_lastbank[SAM4S_USB_NENDP];
 unsigned char sam4s_usb_devaddr;
 
 struct usb_ctrlreq sam4s_usb_ctrl; /* global buffer for control requests */
+uint32_t sam4s_usb_ep0buf_len;
+unsigned char sam4s_usb_ep0buf[64]; /* buffer for receiving payload of control transfers */
 
 /* some operations on the CSR register need a few NOPs */
 static inline void
@@ -159,6 +161,9 @@ sam4s_usb_setaddr(unsigned int addr)
 	}
 }
 
+/* handler for when we have recveived a SETUP transaction on our control
+   endpoint, *or* the SETUP transaction followed by a data-out transfer
+   the payload of which we have stored in sam4s_usb_ep0buf */
 static void
 sam4s_usb_handle_ep0_setup() {
 	uint16_t ret16 = 0;
@@ -169,7 +174,7 @@ sam4s_usb_handle_ep0_setup() {
 	if (BMREQUESTTYPE_TYPE(sam4s_usb_ctrl.bmRequestType) !=
 	    BMREQUESTTYPE_TYPE_STD
 	) {
-		wrlen = -1;
+		wrlen = -1; /* stall */
 		goto out;
 	}
 
@@ -209,7 +214,7 @@ sam4s_usb_handle_ep0_setup() {
 		sam4s_usb_devaddr = sam4s_usb_ctrl.wValue;
 		wrptr = (char*)&ret16;  /* dummy */
 		wrlen = 0;       /* empty */
-	} else if (sam4s_usb_ctrl.bRequest = BREQUEST_STD_GET_DESCRIPTOR) {
+	} else if (sam4s_usb_ctrl.bRequest == BREQUEST_STD_GET_DESCRIPTOR) {
 		/* TODO */
 	} else {
 		/* not handled, stall endpoint */
@@ -233,37 +238,57 @@ out:
 			sam4s_usb_ep_state[0] = SAM4S_USB_EP_EP0_ADDRESS;
 		else
 			sam4s_usb_ep_state[0] = SAM4S_USB_EP_EP0_STATUS_IN;
+
+		sam4s_usb_csr_set(0, UDP_CSR_TXPKTRDY); /* transmit packet */
 	}
 }
 
-/* data is received via two banks (0, 1) per endpoint */
+/* this is the main handler for data reception, which is double buffered
+   (two banks) */
 static void
 sam4s_usb_handle_bankint(unsigned int ep, int bank)
 {
-	uint32_t pktsize = UDP_CSR_RXBYTECNT(UDP->UDP_CSR[ep]);
-	unsigned char c, *p;
+	uint32_t rxbytecnt = UDP_CSR_RXBYTECNT(UDP->UDP_CSR[ep]);
+	uint32_t copysize = rxbytecnt;
+	unsigned char *dst;
 
 	/* normal payload */
 	if (sam4s_usb_ep_state[ep] == SAM4S_USB_EP_IDLE) {
-		while (pktsize--)
-			c = UDP->UDP_FDR[ep];
-	/* control endpoint data */
+		while (rxbytecnt--) {
+			unsigned char c = UDP->UDP_FDR[ep];
+		}
+		/* TODO: what to do with the data?! */
+	/* control transfer with additional data received */
 	} else if (sam4s_usb_ep_state[ep] == SAM4S_USB_EP_EP0_DATA_OUT) {
-		/* should always be ep==0 and bank == 0! */
+		if (copysize > sizeof(sam4s_usb_ep0buf))
+			copysize = sizeof(sam4s_usb_ep0buf);
+		sam4s_usb_ep0buf_len = copysize;
 
-		p = (char *)&sam4s_usb_ctrl;
-		while (pktsize--)
-			*p++ = UDP->UDP_FDR[ep];
-		sam4s_usb_ep0setup();
+		dst = sam4s_usb_ep0buf;
+
+		while (copysize--) {
+			*dst++ = UDP->UDP_FDR[ep];
+			rxbytecnt--;
+		}
+	} else {
+		/* TODO */
 	}
-	sam4s_usb_lastbank[ep] = bank;
 
-	/* clear bank status bit */
+	while (rxbytecnt--) { 	/*  in case we haven't read all, yet */
+		unsigned char c = UDP->UDP_FDR[ep];
+	}
+
+	sam4s_usb_lastbank[ep] = bank; /* remember used bank, clr irq flag */
 	sam4s_usb_csr_clr(ep, bank ? UDP_CSR_RX_DATA_BK1 : UDP_CSR_RX_DATA_BK0);
+
+	/* in case it was a control request with addtln data, process... */
+	if (sam4s_usb_ep_state[ep] == SAM4S_USB_EP_EP0_DATA_OUT)
+		sam4s_usb_handle_ep0_setup();
 }
 
+/* interrupt handler for the endpoint */
 static void
-sam4s_usb_handle_epint(unsigned int ep)  /* nuttx: sam_ep_interrupt */
+sam4s_usb_handle_epint(unsigned int ep)
 {
 	uint32_t csr = UDP->UDP_CSR[ep];
 	enum sam4s_usb_ep_state *state = & sam4s_usb_ep_state[ep];
@@ -277,11 +302,11 @@ sam4s_usb_handle_epint(unsigned int ep)  /* nuttx: sam_ep_interrupt */
 	if (csr & UDP_CSR_TXCOMP) { /* transmission has completed */
 		sam4s_usb_csr_clr(ep, UDP_CSR_TXCOMP);
 
-		/* completion of a normal write request */
+		/* completion of a normal write request, or status for ctrl transfer */
 		if (*state == SAM4S_USB_EP_SENDING ||
 		    *state == SAM4S_USB_EP_EP0_STATUS_IN
 		) {
-			/* sam req_write() */
+			/* ... */
 		} else if (*state == SAM4S_USB_EP_EP0_ADDRESS) {
 			sam4s_usb_setaddr(sam4s_usb_devaddr);
 		} else {
@@ -321,34 +346,43 @@ sam4s_usb_handle_epint(unsigned int ep)  /* nuttx: sam_ep_interrupt */
 
 	/* setup packet received see line 2157 of nuttx sam_udp.c */
 	if (csr & UDP_CSR_RXSETUP) {
-		unsigned int len;
+		unsigned int rxbytecnt = UDP_CSR_RXBYTECNT(csr);
+		unsigned int copysize = rxbytecnt;
 		unsigned char *dst;
 
-		/* read descriptor */
+		if (copysize >= sizeof(sam4s_usb_ctrl))
+			copysize = sizeof(sam4s_usb_ctrl);
 		dst = (unsigned char *)&sam4s_usb_ctrl;
-		len = UDP_CSR_RXBYTECNT(csr);
-		while (len--)
-			*dst = UDP->UDP_FDR[0];
+		while (copysize--) {
+			*dst++ = UDP->UDP_FDR[0];
+			rxbytecnt--;
+		}
 
-		/* HOST->DEV (bmRequestType.D7 == 0), data is to device,
-		   so we switch to EP0_DATA_OUT state, wait for additional
-		   data and process this data later... */
-		if (BMREQUESTTYPE_DIR(sam4s_usb_ctrl.bmRequestType) ==
-			BMREQUESTTYPE_DIR_HOST_TO_DEV
+		while (rxbytecnt--) {
+			unsigned char c = UDP->UDP_FDR[0];
+		}
+
+		/* out request, bmRequestType.D7 == 0, i.e. host->device
+		   with additional data, so we have to wait..*/
+		if ((BMREQUESTTYPE_DIR(sam4s_usb_ctrl.bmRequestType) ==
+			BMREQUESTTYPE_DIR_HOST_TO_DEV) &&
+			sam4s_usb_ctrl.wLength > 0
 		){
+			/* we will receive additional data */
 			sam4s_usb_ep_state[ep] = SAM4S_USB_EP_EP0_DATA_OUT;
 			sam4s_usb_csr_clr(ep, UDP_CSR_DIR);
-			sam4s_usb_csr_clr(ep, UDP_CSR_RXSETUP);		
+			sam4s_usb_csr_clr(ep, UDP_CSR_RXSETUP);
 		} else {
-			/* DEV->HOST, process setup request */
-			sam4s_usb_handle_ep0_setup();
+			/* out request without additional data, or a request
+			   to send in data, which we process immediately */
 			sam4s_usb_ep_state[ep] = SAM4S_USB_EP_IDLE;
 			sam4s_usb_csr_clr(ep, UDP_CSR_RXSETUP);		
-			sam4s_usb_ctrl_setup();
+			sam4s_usb_handle_ep0_setup();
 		}
 	}
 }
 
+/* main interrupt handler for USB device peripheral */
 void
 UDP_Handler()
 {
