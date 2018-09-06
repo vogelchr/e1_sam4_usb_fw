@@ -10,14 +10,14 @@
 const struct libusb_device_descriptor sam4s_usb_descr_dev = {
 	.bLength = sizeof(sam4s_usb_descr_dev),
 	.bDescriptorType = LIBUSB_DT_DEVICE,
-	.bcdUSB = 2,
+	.bcdUSB = 0x0200,  /* 2.00 */
 	.bDeviceClass = 0,
 	.bDeviceSubClass = 0,
 	.bDeviceProtocol = 0,
 	.bMaxPacketSize0 = 64, /* endpoint 0 max packet size */
 	.idVendor = 0x1245,
 	.idProduct = 0x2342,
-	.bcdDevice = 2,
+	.bcdDevice = 0x0100, /* 1.00 */
 	.iManufacturer = 0,
 	.iProduct = 0,
 	.iSerialNumber = 0,
@@ -68,36 +68,3 @@ const struct libusb_endpoint_descriptor sam4s_usb_descr_ep2 = {
 	.bRefresh = 0,
 	.bSynchAddress = 0
 };
-
-struct libusb_descriptor_common_hdr {
-	uint8_t  bLength;
-	uint8_t  bDescriptorType;
-} __attribute__((packed));
-
-const void * sam4s_usb_descriptors_table[] = {
-	&sam4s_usb_descr_dev,
-	&sam4s_usb_descr_cfg,
-	&sam4s_usb_descr_int,
-	&sam4s_usb_descr_ep1,
-	&sam4s_usb_descr_ep2
-};
-
-const void *
-sam4s_usb_descriptors_get(enum libusb_descriptor_type dt, int num)
-{
-	const void **p = sam4s_usb_descriptors_table;
-	const struct libusb_descriptor_common_hdr *pdch;
-
-	int i = 1;
-
-	for (p = sam4s_usb_descriptors_table; *p != NULL; p++) {
-		pdch = (const struct libusb_descriptor_common_hdr*)p;
-		if (pdch->bDescriptorType != dt)
-			continue;
-		if (num == i)
-			return (void*)pdch;
-		i++;
-	}
-
-	return NULL;
-}

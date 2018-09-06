@@ -27,7 +27,7 @@
 #include "sam4s_clock.h"
 #include "sam4s_spi.h"
 #include "sam4s_usb.h"
-
+#include "sam4s_usb_descriptors.h"
 #include "gps_steer.h"
 #include "trace_util.h"
 
@@ -164,6 +164,9 @@ main()
 	printf("Hello, world.\r\n");
 	printf("=============\r\n\r\n");
 
+	printf("sam4s_usb_descr_cfg=%p\r\n", &sam4s_usb_descr_cfg);
+	printf("length=%d\r\n", sam4s_usb_descr_cfg.bLength);
+
 	for(;;) {
 		int k;
 
@@ -265,6 +268,11 @@ main()
 					printf("\r\n");
 			}
 		}
+
+		if (k == 'u')
+			sam4s_usb_init();
+		if (k == 'U')
+			sam4s_usb_off();
 
 	}
 

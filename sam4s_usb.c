@@ -1,8 +1,10 @@
 #include "sam4s_usb.h"
 #include "sam4s_clock.h"
+#include "sam4s_usb_descriptors.h"
 #include "trace_util.h"
 #include <sam4s4c.h>
 #include <unistd.h>
+#include <string.h>
 
 /* 
  * This file is part of the osmocom sam4s usb interface firmware.
@@ -28,6 +30,11 @@
    nuttx/blob/master/arch/arm/src/sam34/sam_udp.c
 */
 
+#define TRACE_TAG_USB(l) ('u' | ('s' << 8) | ((l) << 16))
+
+#define TRACE(v)      trace_util_user(TRACE_TAG_USB(__LINE__), (v))
+#define TRACE_IRQ(v)  trace_util_in_irq(TRACE_TAG_USB(__LINE__), (v))
+
 #define SAM4S_USB_NENDP ((int)(sizeof(UDP->UDP_CSR) / sizeof(UDP->UDP_CSR[0])))
 #define UDP_IxR_EPxINT 0xff /* UDP_ISR_EP0INT, EP1INT... EP7INT */
 #define UDP_IxR_EPnINT(n) (1U << ((n) & 0x7))
@@ -36,18 +43,16 @@
                              UDP_CSR_STALLSENT | UDP_CSR_RXSETUP | \
                              UDP_CSR_TXCOMP)
 
-#define USB_REQ_DIR_IN (1<<7)  /* highest bit: 1: in, 0: out */
-
 #define BMREQUESTTYPE_DIR_MASK        (0x80)
-#define BMREQUESTTYPE_DIR_DEV_TO_HOST (0x80)
-#define BMREQUESTTYPE_DIR_HOST_TO_DEV (0x00)
+#define BMREQUESTTYPE_DIR_DEV_TO_HOST (0x80) /* in */
+#define BMREQUESTTYPE_DIR_HOST_TO_DEV (0x00) /* out */
 #define BMREQUESTTYPE_DIR(v)          ((v) & 0x80)
 
 #define BMREQUESTTYPE_TYPE_MASK   (0x60)
 #define BMREQUESTTYPE_TYPE_STD    (0x00)  /* D6..5=0, Standard */
 #define BMREQUESTTYPE_TYPE_CLASS  (0x20)  /* D6..5=1, Class */
 #define BMREQUESTTYPE_TYPE_VENDOR (0x40)  /* D6..5=2, Vendor */
-#define BMREQUESTTYPE_TYPE_RES    (0x00)  /* D6..5=3, Reserved */
+#define BMREQUESTTYPE_TYPE_RES    (0x60)  /* D6..5=3, Reserved */
 #define BMREQUESTTYPE_TYPE(v)     ((v) & BMREQUESTTYPE_TYPE_MASK)
 
 #define BMREQUESTTYPE_RECP_MASK   (0x1f)
@@ -89,9 +94,10 @@ enum sam4s_usb_ep_state {
 
 enum sam4s_usb_dev_state {
 	SAM4S_USB_DEV_POWERED = 0,
-	SAM4S_USB_DEV_DEFAULT = 1,
-	SAM4S_USB_DEV_ADDRESSED = 2,
-	SAM4S_USB_DEV_CONFIGURED = 3,
+	SAM4S_USB_DEV_ATTACHED = 1,
+	SAM4S_USB_DEV_DEFAULT = 2,
+	SAM4S_USB_DEV_ADDRESSED = 3,
+	SAM4S_USB_DEV_CONFIGURED = 4,
 	SAM4S_USB_DEV_SUSPENDED = 0x80,  /* not used directly, but or-ed */
 	SAM4S_USB_DEV_SUSP_POWERED = SAM4S_USB_DEV_POWERED | SAM4S_USB_DEV_SUSPENDED,
 	SAM4S_USB_DEV_SUSP_DEFAULT = SAM4S_USB_DEV_DEFAULT | SAM4S_USB_DEV_SUSPENDED,
@@ -108,13 +114,27 @@ unsigned char sam4s_usb_lastbank[SAM4S_USB_NENDP];
 unsigned char sam4s_usb_devaddr;
 
 struct usb_ctrlreq sam4s_usb_ctrl; /* global buffer for control requests */
-uint32_t sam4s_usb_ep0buf_len;
 unsigned char sam4s_usb_ep0buf[64]; /* buffer for receiving payload of control transfers */
+unsigned int sam4s_usb_ep0buf_len;  /* number of bytes used within buffer */
+
+static inline void
+sam4s_usb_cp_ep0buf(unsigned char *src, unsigned int len)
+{
+	unsigned char *dst = sam4s_usb_ep0buf + sam4s_usb_ep0buf_len;
+	while (sam4s_usb_ep0buf_len <= sizeof(sam4s_usb_ep0buf) && len) {
+		*dst++ = *src++;
+		len--;
+		sam4s_usb_ep0buf_len++;
+	}
+}
+
+#define SAM4S_USB_CP_EP0BUF_OBJ(x) \
+		sam4s_usb_cp_ep0buf((unsigned char*)&(x), sizeof(x))
 
 /* some operations on the CSR register need a few NOPs */
 static inline void
 sam4s_usb_nops(unsigned int n) {
-	while (n)
+	while (n--)
 		asm volatile ("nop"::);
 }
 
@@ -137,10 +157,46 @@ sam4s_usb_csr_set(unsigned int ep, uint32_t mask) {
 }
 
 static void
-sam4s_usb_stall(unsigned int ep)
+sam4s_usb_ep_reset(unsigned int ep)
 {
+	if (ep >= SAM4S_USB_NENDP)
+		return;
+
+	UDP->UDP_IDR = UDP_IxR_EPnINT(ep);   /* disable interrupt */
+	UDP->UDP_ICR = UDP_IxR_EPnINT(ep);   /* acknowledge interrupt */
+
+	UDP->UDP_RST_EP = 1<<ep; /* reset endpoint fifo */
+	UDP->UDP_CSR[ep] = 0;
+	UDP->UDP_RST_EP = 0;     /* clear endpoint reset flag */
+
+	sam4s_usb_ep_state[ep] = SAM4S_USB_EP_DISABLED;
 }
 
+static inline void
+sam4s_usb_cp_to_fdr(unsigned int ep, const unsigned char *buf, unsigned int len)
+{
+	while (len--)
+		UDP->UDP_FDR[ep] = *buf++;
+}
+
+static inline unsigned int
+sam4s_usb_cp_from_fdr(unsigned int ep, unsigned char *dst, unsigned int rxbytecnt, unsigned int dstlen)
+{
+	unsigned int ret = 0;
+	volatile char c;
+
+	while (dstlen && rxbytecnt) {
+		*dst++ = UDP->UDP_FDR[ep];
+		dstlen--;
+		rxbytecnt--;
+		ret++;
+	}
+
+	while (rxbytecnt--)
+		c = UDP->UDP_FDR[ep];
+
+	return ret;
+}
 
 /* go either in the addressed (addr==0) or default (addr!=0)
    state, see state diagram §40.6.3, Fig 40-14 USB Device State Diagram */
@@ -166,14 +222,17 @@ sam4s_usb_setaddr(unsigned int addr)
    the payload of which we have stored in sam4s_usb_ep0buf */
 static void
 sam4s_usb_handle_ep0_setup() {
-	uint16_t ret16 = 0;
-	int32_t wrlen = 0;   /* set to -1 to stall */
-	char *wrptr = NULL;  /* set to != NULL to send data */
+	int wrlen = 0;   /* set to -1 to stall */
+
+	TRACE_IRQ(sam4s_usb_ctrl.bmRequestType |
+		(sam4s_usb_ctrl.bRequest << 8) |
+		(sam4s_usb_ctrl.wLength << 16));
 
 	/* only handle standard requests for now! */
 	if (BMREQUESTTYPE_TYPE(sam4s_usb_ctrl.bmRequestType) !=
 	    BMREQUESTTYPE_TYPE_STD
 	) {
+		TRACE_IRQ(0xffffffff);
 		wrlen = -1; /* stall */
 		goto out;
 	}
@@ -182,9 +241,10 @@ sam4s_usb_handle_ep0_setup() {
 		if (sam4s_usb_ctrl.wValue != 0 ||
 		    sam4s_usb_ctrl.wLength != 2
 		) {
-			/* stall */
+			TRACE_IRQ(0xffffffff);
+			wrlen = -1;
 		} else {
-			uint16_t ep = 0;
+			uint16_t ep = 0, v;
 
 			switch (BMREQUESTTYPE_RECP(sam4s_usb_ctrl.bmRequestType)) {
 			case BMREQUESTTYPE_RECP_ENDP:
@@ -192,30 +252,50 @@ sam4s_usb_handle_ep0_setup() {
 				if (ep >= SAM4S_USB_NENDP)
 					ep = 0;
 				if (sam4s_usb_ep_state[ep] == SAM4S_USB_EP_STALLED)
-					ret16 = 1;
+					v = 1;
 				break;
 			case BMREQUESTTYPE_RECP_DEV:
-				ret16 = 0; /* could be REMOTEWAKEUP capable */
+				v = 0; /* could be REMOTEWAKEUP capable */
 				break;
 			case BMREQUESTTYPE_RECP_INTF:
-				ret16 = 0;
+				v = 0;
 				break;
-			} 
+			}
 			/* send back status */
-			wrptr = (char*)&ret16;
-			wrlen = sizeof(ret16);
+			sam4s_usb_ep0buf_len = 0;
+			SAM4S_USB_CP_EP0BUF_OBJ(v);
+			wrlen = sizeof(v);
 		}
 	} else if (sam4s_usb_ctrl.bRequest == BREQUEST_STD_CLEAR_FEATURE) {
+		TRACE_IRQ(0xffffffff);
+		wrlen = -1;
 		/* TODO */
 	} else if (sam4s_usb_ctrl.bRequest == BREQUEST_STD_SET_FEATURE) {
+		TRACE_IRQ(0xffffffff);
+		wrlen = -1;
 		/* TODO */
-		wrptr = (char*)&ret16;
 	} else if (sam4s_usb_ctrl.bRequest == BREQUEST_STD_SET_ADDRESS) {
+		TRACE_IRQ( sam4s_usb_ctrl.wValue);
 		sam4s_usb_devaddr = sam4s_usb_ctrl.wValue;
-		wrptr = (char*)&ret16;  /* dummy */
-		wrlen = 0;       /* empty */
 	} else if (sam4s_usb_ctrl.bRequest == BREQUEST_STD_GET_DESCRIPTOR) {
-		/* TODO */
+		/* descriptor type */
+		uint8_t dt = sam4s_usb_ctrl.wValue >> 8;
+		sam4s_usb_ep0buf_len = 0;
+		TRACE_IRQ(dt);
+		if (dt == LIBUSB_DT_DEVICE) {
+			SAM4S_USB_CP_EP0BUF_OBJ(sam4s_usb_descr_dev);
+			wrlen = sam4s_usb_ep0buf_len;
+		} else if (dt == LIBUSB_DT_CONFIG) {
+			SAM4S_USB_CP_EP0BUF_OBJ(sam4s_usb_descr_cfg);
+			SAM4S_USB_CP_EP0BUF_OBJ(sam4s_usb_descr_int);
+			SAM4S_USB_CP_EP0BUF_OBJ(sam4s_usb_descr_ep1);
+			SAM4S_USB_CP_EP0BUF_OBJ(sam4s_usb_descr_ep2);
+			((struct libusb_config_descriptor *)
+			  (&sam4s_usb_ep0buf))->wTotalLength = sam4s_usb_ep0buf_len;
+			wrlen = sam4s_usb_ep0buf_len;
+		} else {
+			wrlen = -1; /* error -> stall */
+		}
 	} else {
 		/* not handled, stall endpoint */
 		wrlen = -1;
@@ -228,19 +308,15 @@ out:
 		return;
 	}
 
-	if (wrptr) {
-		/* write output */
-		while(wrlen)
-			UDP->UDP_FDR[0] = *wrptr++;
-		sam4s_usb_csr_set(0, UDP_CSR_TXPKTRDY);
+	if (sam4s_usb_ctrl.bRequest == BREQUEST_STD_SET_ADDRESS)
+		sam4s_usb_ep_state[0] = SAM4S_USB_EP_EP0_ADDRESS;
+	else
+		sam4s_usb_ep_state[0] = SAM4S_USB_EP_EP0_STATUS_IN;
 
-		if (sam4s_usb_ctrl.bRequest == BREQUEST_STD_SET_ADDRESS)
-			sam4s_usb_ep_state[0] = SAM4S_USB_EP_EP0_ADDRESS;
-		else
-			sam4s_usb_ep_state[0] = SAM4S_USB_EP_EP0_STATUS_IN;
-
-		sam4s_usb_csr_set(0, UDP_CSR_TXPKTRDY); /* transmit packet */
-	}
+	/* transmit packet */
+	sam4s_usb_cp_to_fdr(0, sam4s_usb_ep0buf, wrlen);
+	sam4s_usb_csr_set(0, UDP_CSR_TXPKTRDY);
+	TRACE_IRQ(wrlen);
 }
 
 /* this is the main handler for data reception, which is double buffered
@@ -249,33 +325,18 @@ static void
 sam4s_usb_handle_bankint(unsigned int ep, int bank)
 {
 	uint32_t rxbytecnt = UDP_CSR_RXBYTECNT(UDP->UDP_CSR[ep]);
-	uint32_t copysize = rxbytecnt;
-	unsigned char *dst;
 
 	/* normal payload */
 	if (sam4s_usb_ep_state[ep] == SAM4S_USB_EP_IDLE) {
-		while (rxbytecnt--) {
-			unsigned char c = UDP->UDP_FDR[ep];
-		}
+		sam4s_usb_cp_from_fdr(ep, NULL, rxbytecnt, 0);
 		/* TODO: what to do with the data?! */
 	/* control transfer with additional data received */
 	} else if (sam4s_usb_ep_state[ep] == SAM4S_USB_EP_EP0_DATA_OUT) {
-		if (copysize > sizeof(sam4s_usb_ep0buf))
-			copysize = sizeof(sam4s_usb_ep0buf);
-		sam4s_usb_ep0buf_len = copysize;
-
-		dst = sam4s_usb_ep0buf;
-
-		while (copysize--) {
-			*dst++ = UDP->UDP_FDR[ep];
-			rxbytecnt--;
-		}
+		sam4s_usb_ep0buf_len = sam4s_usb_cp_from_fdr(ep,
+					sam4s_usb_ep0buf, rxbytecnt,
+					sizeof(sam4s_usb_ep0buf));
 	} else {
 		/* TODO */
-	}
-
-	while (rxbytecnt--) { 	/*  in case we haven't read all, yet */
-		unsigned char c = UDP->UDP_FDR[ep];
 	}
 
 	sam4s_usb_lastbank[ep] = bank; /* remember used bank, clr irq flag */
@@ -339,28 +400,20 @@ sam4s_usb_handle_epint(unsigned int ep)
 		) {
 			/* isochronous error! */
 			*state = SAM4S_USB_EP_IDLE;
-		} else if (*state != SAM4S_USB_EP_STALLED) {
+		} else /* if (*state != SAM4S_USB_EP_STALLED) */  {
 			sam4s_usb_csr_clr(ep, UDP_CSR_FORCESTALL);			
 		}
 	}
 
-	/* setup packet received see line 2157 of nuttx sam_udp.c */
 	if (csr & UDP_CSR_RXSETUP) {
 		unsigned int rxbytecnt = UDP_CSR_RXBYTECNT(csr);
-		unsigned int copysize = rxbytecnt;
-		unsigned char *dst;
 
-		if (copysize >= sizeof(sam4s_usb_ctrl))
-			copysize = sizeof(sam4s_usb_ctrl);
-		dst = (unsigned char *)&sam4s_usb_ctrl;
-		while (copysize--) {
-			*dst++ = UDP->UDP_FDR[0];
-			rxbytecnt--;
-		}
+		sam4s_usb_cp_from_fdr(0, (unsigned char*)&sam4s_usb_ctrl,
+			rxbytecnt, sizeof(sam4s_usb_ctrl));
 
-		while (rxbytecnt--) {
-			unsigned char c = UDP->UDP_FDR[0];
-		}
+		TRACE(sam4s_usb_ctrl.bmRequestType |
+			(sam4s_usb_ctrl.bRequest << 8) |
+			(sam4s_usb_ctrl.wLength << 16));
 
 		/* out request, bmRequestType.D7 == 0, i.e. host->device
 		   with additional data, so we have to wait..*/
@@ -370,12 +423,13 @@ sam4s_usb_handle_epint(unsigned int ep)
 		){
 			/* we will receive additional data */
 			sam4s_usb_ep_state[ep] = SAM4S_USB_EP_EP0_DATA_OUT;
-			sam4s_usb_csr_clr(ep, UDP_CSR_DIR);
+			sam4s_usb_csr_clr(ep, UDP_CSR_DIR); /* out */
 			sam4s_usb_csr_clr(ep, UDP_CSR_RXSETUP);
 		} else {
 			/* out request without additional data, or a request
 			   to send in data, which we process immediately */
 			sam4s_usb_ep_state[ep] = SAM4S_USB_EP_IDLE;
+			sam4s_usb_csr_set(ep, UDP_CSR_DIR); /* in */
 			sam4s_usb_csr_clr(ep, UDP_CSR_RXSETUP);		
 			sam4s_usb_handle_ep0_setup();
 		}
@@ -412,8 +466,6 @@ UDP_Handler()
 		}
 
 		if (irq_pending & (UDP_ISR_RXRSM|UDP_ISR_WAKEUP)) {
-			/* XXX wakeup board, not implemented! */
-
 			/* acknowledge interrupt, disable wakeup, enable suspend */
 			UDP->UDP_ICR = (UDP_ICR_WAKEUP|UDP_ICR_RXRSM|UDP_ICR_WAKEUP);
 			UDP->UDP_IDR = UDP_IDR_RXRSM | UDP_IDR_WAKEUP;
@@ -425,8 +477,15 @@ UDP_Handler()
 		}
 
 		if (irq_pending & UDP_ISR_ENDBUSRES) {
+			sam4s_usb_dev_state = SAM4S_USB_DEV_DEFAULT;
 			UDP->UDP_ICR = UDP_ICR_ENDBUSRES;
-			/* TODO */
+		
+			/* configure endpoint 0 as control endpoint */
+			UDP->UDP_RST_EP = 1 << 0; /* reset, then enable... */
+			UDP->UDP_CSR[0] = (UDP_CSR_EPTYPE_CTRL | UDP_CSR_EPEDS);
+			UDP->UDP_RST_EP = 0;      /* clear reset flag */
+			UDP->UDP_IER    = 1 << 0; /* enable interrupt */
+			sam4s_usb_ep_state[0] =  SAM4S_USB_EP_IDLE;
 			break;
 		}
 
@@ -441,51 +500,26 @@ UDP_Handler()
 	}
 }
 
-static void
-sam4s_usb_ep_reset(unsigned int ep)
-{
-	if (ep >= SAM4S_USB_NENDP)
-		return;
-
-	UDP->UDP_IDR = UDP_IxR_EPnINT(ep);   /* disable interrupt */
-	UDP->UDP_ICR = UDP_IxR_EPnINT(ep);   /* acknowledge interrupt */
-	UDP->UDP_CSR[ep] = 0;
-	UDP->UDP_RST_EP = 1<<ep; /* reset endpoint */
-	UDP->UDP_RST_EP = 0;
-	sam4s_usb_ep_state[ep] = SAM4S_USB_EP_DISABLED;
-}
-
-static void
-sam4s_usb_full_reset()
-{
-	int i;
-
-	sam4s_usb_devaddr = 0;
-	sam4s_usb_setaddr(0);
-	sam4s_usb_dev_state = SAM4S_USB_DEV_DEFAULT;
-	for (i=0; i<SAM4S_USB_NENDP; i++) {
-		sam4s_usb_ep_reset(i);
-	}
-
-	UDP->UDP_IDR = UDP->UDP_IMR; /* disable all interrupts */
-	UDP->UDP_ICR = UDP->UDP_ISR; /* acknowledge all interrupts */
-	/* enable interrupts for wakeup, busreset, receive suspend */
-	UDP->UDP_ICR = UDP_ICR_WAKEUP | UDP_ICR_ENDBUSRES | UDP_ICR_RXSUSP;
-	UDP->UDP_IER = UDP_IER_WAKEUP | UDP_IER_RXSUSP | UDP_IER_EP0INT;
-}
-
 void
 sam4s_usb_init()
 {
 	int i;
 
+	TRACE(1); /* init */
+
 	NVIC_DisableIRQ(UDP_IRQn);
+
+	UDP->UDP_TXVC = UDP_TXVC_TXVDIS; /* disable transceiver, disable pullups */
 	UDP->UDP_IDR = UDP->UDP_ISR; /* disable all interrupts */
+	UDP->UDP_ICR = UDP->UDP_ISR; /* acknowledge all interrupts */
 
 	sam4s_clock_peripheral_onoff(ID_UDP, 1 /* on */);
-	sam4s_usb_full_reset();
 
-	UDP->UDP_GLB_STAT = UDP_GLB_STAT_RMWUPE;
+	sam4s_usb_setaddr(0);
+	sam4s_usb_dev_state = SAM4S_USB_DEV_DEFAULT;
+
+	for (i=0; i<SAM4S_USB_NENDP; i++)
+		sam4s_usb_ep_reset(i);
 
 	/* Enable DDM(PB10), DDP(PB11), should be the default, but I got
 	   confused along the way and better leave it in here explicitly. */
@@ -493,15 +527,32 @@ sam4s_usb_init()
 
 	/* enable USB peripheral, enable pull up resistor */
 	UDP->UDP_TXVC = UDP_TXVC_PUON;
+	sam4s_usb_dev_state = SAM4S_USB_DEV_ATTACHED;
 
-	/* configure endpoint 0 as control endpoint */
-	UDP->UDP_CSR[0] = 0;
-	UDP->UDP_CSR[0] = UDP_CSR_EPTYPE_CTRL;
-	UDP->UDP_IER = UDP_IER_EP0INT; /* enable endpoint 0 interrupt */
-	sam4s_usb_ep_state[0] =  SAM4S_USB_EP_IDLE;
+	/* now we should get a end-of-busreset interrupt */
 
 	NVIC_SetPriority (UDP_IRQn, 1);
 	NVIC_EnableIRQ(UDP_IRQn);
 
-	TRACE_UTIL_USB('i'); /* init */
+	TRACE(2); /* init */
+}
+
+void
+sam4s_usb_off()
+{
+	int i;
+
+	TRACE(3);
+
+	NVIC_DisableIRQ(UDP_IRQn);
+
+	UDP->UDP_IDR = UDP->UDP_ISR; /* disable all interrupts */
+	UDP->UDP_ICR = UDP->UDP_ISR; /* acknowledge all interrupts */
+	for (i=0; i<SAM4S_USB_NENDP; i++)
+		sam4s_usb_ep_reset(i);
+
+	UDP->UDP_TXVC = UDP_TXVC_TXVDIS; /* disable transceiver */
+	sam4s_clock_peripheral_onoff(ID_UDP, 0 /* off */);
+
+	TRACE(4);
 }

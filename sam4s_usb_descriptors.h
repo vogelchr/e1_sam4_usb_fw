@@ -71,13 +71,10 @@ struct libusb_config_descriptor {
 	uint8_t  bMaxPower;
 } __attribute__((packed));
 
-/* we keep pointers to all descriptors in this table, and rely on the
-   fact that they all start with a common bLength, bDescriptorType layout */
-extern const void * sam4s_usb_descriptors_table[];
-
-/* return descriptor number num (starting at 1) of type dt,
-   return NULL if not found */
-extern const void *
-sam4s_usb_descriptors_get(enum libusb_descriptor_type dt, int num);
+extern const struct libusb_device_descriptor sam4s_usb_descr_dev;
+extern const struct libusb_config_descriptor sam4s_usb_descr_cfg;
+extern const struct libusb_interface_descriptor sam4s_usb_descr_int;
+extern const struct libusb_endpoint_descriptor sam4s_usb_descr_ep1;
+extern const struct libusb_endpoint_descriptor sam4s_usb_descr_ep2;
 
 #endif
