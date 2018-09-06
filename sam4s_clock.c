@@ -204,14 +204,14 @@ sam4s_clock_init()
 	/* will be divided by SSC by 54 to get 2.048 MHz */
 	sam4s_clock_config_pll(5, 18, 0/*PLLA*/);
 
-	/* PLLB: USB clock */
+	/* PLLB: USB clock, 30.72 MHz / 8 * 25 = 96 MHz */
 	sam4s_clock_config_pll(8, 25, 1/*PLLB*/);
 
 	/* siwtch master clock to PLLA 110.592 MHz, fmclk <= 120MHz! */
 	sam4s_clock_master_clock_select(PMC_MCKR_CSS_PLLA_CLK);
 
-	/* enable USB clock: 48 MHz = 96 MHz (PLLA) / 2 */
-	PMC->PMC_USB = PMC_USB_USBDIV(2) | PMC_USB_USBS; /* USBS=1(PLLB) */
+	/* enable USB clock: 96 MHz (PLLB) / USBDIV+1 (=2) = 48 MHz  */
+	PMC->PMC_USB = PMC_USB_USBDIV(1) | PMC_USB_USBS; /* USBS=1(PLLB) */
 	PMC->PMC_SCER |= PMC_SCDR_UDP;
 
 	/* enable SysTick timer */
