@@ -29,6 +29,7 @@
 #include "sam4s_usb.h"
 
 #include "gps_steer.h"
+#include "trace_util.h"
 
 #include <stdio.h>
 
@@ -82,6 +83,8 @@ idt82v2081_reg(unsigned char regnum, int write)
 	return flip_lsb_msb((regnum & 0x1f) | (write?0x00:0x20));
 }
 
+struct trace_util_data trace;
+
 int
 main()
 {
@@ -89,8 +92,6 @@ main()
 
 	/* disable watchdog */
 	WDT->WDT_MR = WDT_MR_WDDIS;
-
-	trace_util_init();
 
 	sam4s_pinmux_init();
 	/* Port PB1 is VCXO_EN */
@@ -168,6 +169,14 @@ main()
 
 		gps_steer_poll();
 
+		if(!trace_util_read(&trace) ) {
+			unsigned int c1 = trace.facility & 0xff;
+			unsigned int c2 = (trace.facility >> 8) & 0xff;
+			unsigned int line = trace.facility >> 16;
+			printf("t:%c %c %5d, %08lx\r\n", c1, c2, line, trace.payload);
+		}
+
+#if 0
 		if (sam4s_ssc_rx_frame_ctr > 16) {
 			/* we have 4 buffers on rx */
 			if (((sam4s_ssc_rx_buf[0 ] & 0x7f) != 0x1b) ||
@@ -178,6 +187,7 @@ main()
 				sam4s_ssc_realign_adjust(0);
 			}
 		}
+#endif
 
 		k = sam4s_uart0_console_rx();
 		if (k == -1)
