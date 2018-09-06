@@ -236,18 +236,18 @@ sam4s_clock_peripheral_onoff(int periph_id, int on_off) {
 	if (periph_id > 31) {
 		periph_id -= 32;
 		if (on_off) {
-			PMC->PMC_PCER1 |= (1UL << periph_id);
+			PMC->PMC_PCER1 = (1UL << periph_id);
 			while (!(PMC->PMC_PCSR1 & (1UL << periph_id)));
 		} else {
-			PMC->PMC_PCER1 &= ~(1UL << periph_id);
+			PMC->PMC_PCDR1 = (1UL << periph_id);
 			while (PMC->PMC_PCSR1 & (1UL << periph_id));
 		}
 	} else {
 		if (on_off) {
-			PMC->PMC_PCER0 |= (1UL << periph_id);
+			PMC->PMC_PCER0 = (1UL << periph_id);
 			while (!(PMC->PMC_PCSR0 & (1UL << periph_id)));
 		} else {
-			PMC->PMC_PCER0 &= ~(1UL << periph_id);
+			PMC->PMC_PCDR0 = (1UL << periph_id);
 			while (PMC->PMC_PCSR0 & (1UL << periph_id));
 		}
 	}
