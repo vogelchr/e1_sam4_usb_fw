@@ -24,7 +24,7 @@
 
 /* hardcoded serial handler for UART0, the bare minimum */
 
-#define BAUDRATE 9600
+#define BAUDRATE 115200
 
 CIRCULAR_BUFFER_DECLARE(rxbuf, char, 32)
 CIRCULAR_BUFFER_DECLARE(txbuf, char, 32)
@@ -68,6 +68,7 @@ sam4s_uart0_console_init() {
 	UART0->UART_CR = UART_CR_RXEN|UART_CR_TXEN;
 }
 
+/* may only happen within non-irq context! */
 void
 sam4s_uart0_console_tx(unsigned char c)
 {
