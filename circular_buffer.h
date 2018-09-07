@@ -17,16 +17,18 @@ struct circular_buffer {
 
 static inline void *
 circular_buffer_next_writep(const struct circular_buffer *p, size_t sz) {
-	if (p->writep == p->end)
+	void *next = (void*)((char*)(p->writep)+sz);
+	if (next == p->end)
 		return p->start;
-	return (void*)((char*)(p->writep)+sz);
+	return next;
 }
 
 static inline void *
 circular_buffer_next_readp(const struct circular_buffer *p, size_t sz) {
-	if (p->readp == p->end)
+	void *next = (void*)((char*)(p->readp)+sz);
+	if (next == p->end)
 		return p->start;
-	return (void*)((char*)(p->readp)+sz);
+	return next;
 }
 
 static inline int
