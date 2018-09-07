@@ -36,9 +36,12 @@
 #define TRACE_IRQ(v)  trace_util_in_irq(TRACE_TAG_USB(__LINE__), (v))
 
 #define SAM4S_USB_NENDP ((int)(sizeof(UDP->UDP_CSR) / sizeof(UDP->UDP_CSR[0])))
+
+/* convenience macros for registers */
+
 #define UDP_IxR_EPxINT 0xff /* UDP_ISR_EP0INT, EP1INT... EP7INT */
 #define UDP_IxR_EPnINT(n) (1U << ((n) & 0x7))
-
+#define RXBYTECNT(ep) ((UDP->UDP_CSR[(ep)]>>UDP_CSR_RXBYTECNT_Pos)&UDP_CSR_RXBYTECNT_Msk)
 #define CSR_NOEFFECT_BITS   (UDP_CSR_RX_DATA_BK0 | UDP_CSR_RX_DATA_BK1 | \
                              UDP_CSR_STALLSENT | UDP_CSR_RXSETUP | \
                              UDP_CSR_TXCOMP)
@@ -324,7 +327,8 @@ out:
 static void
 sam4s_usb_handle_bankint(unsigned int ep, int bank)
 {
-	uint32_t rxbytecnt = UDP_CSR_RXBYTECNT(UDP->UDP_CSR[ep]);
+#define UDP_CSR_RXBYTECNT_READ()
+	uint32_t rxbytecnt = RXBYTECNT(ep);
 
 	/* normal payload */
 	if (sam4s_usb_ep_state[ep] == SAM4S_USB_EP_IDLE) {
@@ -406,10 +410,8 @@ sam4s_usb_handle_epint(unsigned int ep)
 	}
 
 	if (csr & UDP_CSR_RXSETUP) {
-		unsigned int rxbytecnt = UDP_CSR_RXBYTECNT(csr);
-
 		sam4s_usb_cp_from_fdr(0, (unsigned char*)&sam4s_usb_ctrl,
-			rxbytecnt, sizeof(sam4s_usb_ctrl));
+			RXBYTECNT(ep), sizeof(sam4s_usb_ctrl));
 
 		TRACE(sam4s_usb_ctrl.bmRequestType |
 			(sam4s_usb_ctrl.bRequest << 8) |
