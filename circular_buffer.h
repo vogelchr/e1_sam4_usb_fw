@@ -2,6 +2,8 @@
 #define CIRCULAR_BUFFER_H
 
 #include <string.h> /* memcpy */
+#include <stdint.h>
+#include <cmsis_gcc.h>
 
 struct circular_buffer {
 	void *start;
@@ -15,42 +17,84 @@ struct circular_buffer {
  * sz always must be sizeof(type) from when we were declaring the buffer!
  */
 
+/* Advance the read pointer, to getr one element from the circular buffer.
+
+   This should be lockless and work inside or outside irq context.
+
+   If the buffer is empty, we return NULL.
+
+   If the buffer is non-empty, advance the read-pointer and return
+   the pointer before it was advanced (corresponding to the element
+   that has been read. This element will not be overwritten because
+   there is always one free spot between writep (next element to be
+   written) and readp. */
 static inline void *
-circular_buffer_next_writep(const struct circular_buffer *p, size_t sz) {
-	void *next = (void*)((char*)(p->writep)+sz);
-	if (next == p->end)
-		return p->start;
-	return next;
+circular_buffer_inc_readp_if_nonempty(struct circular_buffer *p, size_t sz) {
+	void *rp, *nrp, *wp;
+
+	do {
+		rp = (void*)__LDREXW((uint32_t*)&p->readp);
+		wp = *(void * volatile *)&p->writep;
+
+		if (rp == wp) /* empty */
+			return NULL;
+
+		nrp = (void*)((char*)(rp)+sz);
+		if (nrp == p->end)
+			nrp = p->start;
+	} while (__STREXW((uint32_t)nrp, (uint32_t*)&p->readp));
+
+	return rp;
 }
 
-static inline void *
-circular_buffer_next_readp(const struct circular_buffer *p, size_t sz) {
-	void *next = (void*)((char*)(p->readp)+sz);
-	if (next == p->end)
-		return p->start;
-	return next;
+/* Advance the write pointer to get one element from the circular buffer.
+
+   If the buffer is full, we return NULL.
+
+   If the buffer is not full, we advance the write pointer and return the
+   pointer before it has been advanced. This corresponds to the element that
+   ought to be written.
+   
+   XXX FIXME: This currently leaves the possibility that the element
+              is not written fast enough, so we will have to merge the inc
+	      and put/get functions!
+ */
+
+static inline void *  __attribute__((always_inline))
+circular_buffer_inc_writep_if_nonfull(struct circular_buffer *p, size_t sz) {
+	void *rp, *wp, *nwp;
+
+	do {
+		rp = *(void * volatile *)&p->readp;
+		wp = (void*)__LDREXW((uint32_t*)&p->writep);
+		nwp = (void*)((char*)(wp)+sz);
+		if (nwp == p->end)
+			nwp = p->start;
+		if (nwp == rp) /* full */
+			return NULL;
+	} while(__STREXW((uint32_t)nwp, (uint32_t*)&p->writep));
+	return wp;
 }
 
-static inline int
+static inline int __attribute__((always_inline))
 circular_buffer_put(struct circular_buffer *p, const void * element, size_t sz)
 {
-	void *next_writep = circular_buffer_next_writep(p, sz);
-	if (next_writep == ((volatile struct circular_buffer *)p)->readp)
+	void *wp;
+
+	wp = circular_buffer_inc_writep_if_nonfull(p, sz);
+	if (!wp)
 		return -1; /* full */
-	memcpy(p->writep, element, sz);
-	((volatile struct circular_buffer *)p)->writep = next_writep;
+	memcpy(wp, element, sz);
 	return 0;
 }
 
 static inline int
 circular_buffer_get(struct circular_buffer *p, void * element, size_t sz)
 {
-	void *next_readp = circular_buffer_next_readp(p, sz);
-	if (p->readp == ((volatile struct circular_buffer *)p)->writep)
-		return -1; /* empty */
-	memcpy(element, p->readp, sz);
-	memset(p->readp, '\xba', sz);  /* for debugging, clear */
-	((volatile struct circular_buffer*)p)->readp = next_readp;
+	void *rp = circular_buffer_inc_readp_if_nonempty(p, sz);
+	if (!rp)
+		return -1;
+	memcpy(element, rp, sz);
 	return 0;
 }
 
