@@ -26,9 +26,7 @@
 
 CIRCULAR_BUFFER_DECLARE(trace_util, struct trace_util_data, 128)
 
-
 extern int trace_util_read(struct trace_util_data *p);
-
 
 int
 trace_util_read(struct trace_util_data *p) {
@@ -36,21 +34,6 @@ trace_util_read(struct trace_util_data *p) {
 }
 
 void
-trace_util_user(uint32_t facility, uint32_t payload) {
-	struct trace_util_data tmp;
-	tmp.facility = facility;
-	tmp.payload = payload;
-
-	__disable_irq();
-	trace_util_put(tmp);
-	__enable_irq();
-}
-
-void
-trace_util_in_irq(uint32_t facility, uint32_t payload) {
-	struct trace_util_data tmp;
-	tmp.facility = facility;
-	tmp.payload = payload;
-
-	trace_util_put(tmp);
+trace_util_write(const struct trace_util_data p) {
+	trace_util_put(p);
 }

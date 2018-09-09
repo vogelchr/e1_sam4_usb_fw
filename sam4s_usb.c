@@ -32,8 +32,17 @@
 
 #define TRACE_TAG_USB(l) ('u' | ('s' << 8) | ((l) << 16))
 
-#define TRACE(v)      trace_util_user(TRACE_TAG_USB(__LINE__), (v))
-#define TRACE_IRQ(v)  trace_util_in_irq(TRACE_TAG_USB(__LINE__), (v))
+static void
+trace_write(char *s, uint32_t a, uint32_t b)
+{
+	struct trace_util_data tmp;
+	strncpy(tmp.text, s, sizeof(tmp.text));
+	tmp.a = a;
+	tmp.b = b;
+	trace_util_write(tmp);
+}
+
+#define TRACE(s, a, b) trace_write(s, a, b)
 
 #define SAM4S_USB_NENDP ((int)(sizeof(UDP->UDP_CSR) / sizeof(UDP->UDP_CSR[0])))
 
@@ -41,7 +50,7 @@
 
 #define UDP_IxR_EPxINT 0xff /* UDP_ISR_EP0INT, EP1INT... EP7INT */
 #define UDP_IxR_EPnINT(n) (1U << ((n) & 0x7))
-#define RXBYTECNT(ep) ((UDP->UDP_CSR[(ep)]>>UDP_CSR_RXBYTECNT_Pos)&UDP_CSR_RXBYTECNT_Msk)
+#define RXBYTECNT(ep) ((UDP->UDP_CSR[(ep)]&UDP_CSR_RXBYTECNT_Msk)>>UDP_CSR_RXBYTECNT_Pos)
 #define CSR_NOEFFECT_BITS   (UDP_CSR_RX_DATA_BK0 | UDP_CSR_RX_DATA_BK1 | \
                              UDP_CSR_STALLSENT | UDP_CSR_RXSETUP | \
                              UDP_CSR_TXCOMP)
@@ -178,13 +187,17 @@ sam4s_usb_ep_reset(unsigned int ep)
 static inline void
 sam4s_usb_cp_to_fdr(unsigned int ep, const unsigned char *buf, unsigned int len)
 {
+	uint32_t a=(buf[0]<<24)|(buf[1]<<16)|(buf[2]<<8)|buf[3];
+	uint32_t b=len;
 	while (len--)
 		UDP->UDP_FDR[ep] = *buf++;
+	TRACE("sam4s_usb_cp_to_fdr", a, b);
 }
 
 static inline unsigned int
-sam4s_usb_cp_from_fdr(unsigned int ep, unsigned char *dst, unsigned int rxbytecnt, unsigned int dstlen)
+sam4s_usb_cp_from_fdr(unsigned int ep, unsigned char *dst, unsigned int dstlen)
 {
+	unsigned int rxbytecnt = RXBYTECNT(ep);
 	unsigned int ret = 0;
 	volatile char c;
 
@@ -227,16 +240,19 @@ static void
 sam4s_usb_handle_ep0_setup() {
 	int wrlen = 0;   /* set to -1 to stall */
 
-	TRACE_IRQ(sam4s_usb_ctrl.bmRequestType |
-		(sam4s_usb_ctrl.bRequest << 8) |
-		(sam4s_usb_ctrl.wLength << 16));
+	TRACE("\033[33;1mep0_setup\033[0m",
+		sam4s_usb_ctrl.bmRequestType << 24|
+		(sam4s_usb_ctrl.bRequest << 16) |
+		(sam4s_usb_ctrl.wValue),
+		(sam4s_usb_ctrl.wIndex << 16) | 
+		sam4s_usb_ctrl.wLength
+	);
 
 	/* only handle standard requests for now! */
 	if (BMREQUESTTYPE_TYPE(sam4s_usb_ctrl.bmRequestType) !=
 	    BMREQUESTTYPE_TYPE_STD
 	) {
-		TRACE_IRQ(0xffffffff);
-		wrlen = -1; /* stall */
+		TRACE("ep0_setup, type != STD",0,0);
 		goto out;
 	}
 
@@ -244,7 +260,7 @@ sam4s_usb_handle_ep0_setup() {
 		if (sam4s_usb_ctrl.wValue != 0 ||
 		    sam4s_usb_ctrl.wLength != 2
 		) {
-			TRACE_IRQ(0xffffffff);
+			TRACE("ep0_setup, req/val/len invalid", 0, 0);
 			wrlen = -1;
 		} else {
 			uint16_t ep = 0, v;
@@ -270,31 +286,30 @@ sam4s_usb_handle_ep0_setup() {
 			wrlen = sizeof(v);
 		}
 	} else if (sam4s_usb_ctrl.bRequest == BREQUEST_STD_CLEAR_FEATURE) {
-		TRACE_IRQ(0xffffffff);
+		TRACE("ep0_setup: clear feature", 0, 0);
 		wrlen = -1;
 		/* TODO */
 	} else if (sam4s_usb_ctrl.bRequest == BREQUEST_STD_SET_FEATURE) {
-		TRACE_IRQ(0xffffffff);
+		TRACE("ep0_setup: set feature", 0, 0);
 		wrlen = -1;
 		/* TODO */
 	} else if (sam4s_usb_ctrl.bRequest == BREQUEST_STD_SET_ADDRESS) {
-		TRACE_IRQ( sam4s_usb_ctrl.wValue);
+		TRACE("ep0_setup: set address", sam4s_usb_ctrl.wValue, 0);
 		sam4s_usb_devaddr = sam4s_usb_ctrl.wValue;
 	} else if (sam4s_usb_ctrl.bRequest == BREQUEST_STD_GET_DESCRIPTOR) {
 		/* descriptor type */
 		uint8_t dt = sam4s_usb_ctrl.wValue >> 8;
 		sam4s_usb_ep0buf_len = 0;
-		TRACE_IRQ(dt);
+		TRACE("ep0_setup: descriptor type", dt, 0);
 		if (dt == LIBUSB_DT_DEVICE) {
 			SAM4S_USB_CP_EP0BUF_OBJ(sam4s_usb_descr_dev);
 			wrlen = sam4s_usb_ep0buf_len;
 		} else if (dt == LIBUSB_DT_CONFIG) {
+			/* build whole packet for host */
 			SAM4S_USB_CP_EP0BUF_OBJ(sam4s_usb_descr_cfg);
 			SAM4S_USB_CP_EP0BUF_OBJ(sam4s_usb_descr_int);
 			SAM4S_USB_CP_EP0BUF_OBJ(sam4s_usb_descr_ep1);
 			SAM4S_USB_CP_EP0BUF_OBJ(sam4s_usb_descr_ep2);
-			((struct libusb_config_descriptor *)
-			  (&sam4s_usb_ep0buf))->wTotalLength = sam4s_usb_ep0buf_len;
 			wrlen = sam4s_usb_ep0buf_len;
 		} else {
 			wrlen = -1; /* error -> stall */
@@ -306,6 +321,7 @@ sam4s_usb_handle_ep0_setup() {
 
 out:
 	if (wrlen == -1) {
+		TRACE("ep0_setup stall", wrlen, 0);
 		sam4s_usb_ep_state[0] = SAM4S_USB_EP_STALLED;
 		sam4s_usb_csr_set(0, UDP_CSR_FORCESTALL);
 		return;
@@ -316,10 +332,13 @@ out:
 	else
 		sam4s_usb_ep_state[0] = SAM4S_USB_EP_EP0_STATUS_IN;
 
+	if (wrlen > sam4s_usb_ctrl.wLength)
+		wrlen = sam4s_usb_ctrl.wLength;
+
 	/* transmit packet */
 	sam4s_usb_cp_to_fdr(0, sam4s_usb_ep0buf, wrlen);
 	sam4s_usb_csr_set(0, UDP_CSR_TXPKTRDY);
-	TRACE_IRQ(wrlen);
+	TRACE("ep0_setup write", wrlen, 0);
 }
 
 /* this is the main handler for data reception, which is double buffered
@@ -327,17 +346,19 @@ out:
 static void
 sam4s_usb_handle_bankint(unsigned int ep, int bank)
 {
-#define UDP_CSR_RXBYTECNT_READ()
-	uint32_t rxbytecnt = RXBYTECNT(ep);
+	TRACE("\033[31;1mhandle_bankint\033[0m", UDP->UDP_CSR[ep],
+		(bank << 31)|(ep << 24)|
+		(sam4s_usb_ep_state[ep] << 16) |
+		RXBYTECNT(ep));
 
 	/* normal payload */
 	if (sam4s_usb_ep_state[ep] == SAM4S_USB_EP_IDLE) {
-		sam4s_usb_cp_from_fdr(ep, NULL, rxbytecnt, 0);
+		sam4s_usb_cp_from_fdr(ep, NULL, 0);
 		/* TODO: what to do with the data?! */
 	/* control transfer with additional data received */
 	} else if (sam4s_usb_ep_state[ep] == SAM4S_USB_EP_EP0_DATA_OUT) {
 		sam4s_usb_ep0buf_len = sam4s_usb_cp_from_fdr(ep,
-					sam4s_usb_ep0buf, rxbytecnt,
+					sam4s_usb_ep0buf,
 					sizeof(sam4s_usb_ep0buf));
 	} else {
 		/* TODO */
@@ -365,6 +386,8 @@ sam4s_usb_handle_epint(unsigned int ep)
 
 	/* Data IN transaction is achieved, acknowledged by the Host */
 	if (csr & UDP_CSR_TXCOMP) { /* transmission has completed */
+		TRACE("\033[34;1mhandle_epint/TXCOMP\033[0m",csr,
+			(ep<<24) | (*state << 16));
 		sam4s_usb_csr_clr(ep, UDP_CSR_TXCOMP);
 
 		/* completion of a normal write request, or status for ctrl transfer */
@@ -398,6 +421,8 @@ sam4s_usb_handle_epint(unsigned int ep)
 	}
 
 	if (csr & UDP_CSR_STALLSENT) {
+		TRACE("\033[34;1mhandle_epint/STALL\033[0m",csr,
+			(ep<<24) | (*state << 16));
 		sam4s_usb_csr_clr(ep, UDP_CSR_STALLSENT);
 		if (UDP_CSR_EPTYPE(csr) == UDP_CSR_EPTYPE_ISO_IN ||
 		    UDP_CSR_EPTYPE(csr) == UDP_CSR_EPTYPE_ISO_OUT
@@ -410,12 +435,12 @@ sam4s_usb_handle_epint(unsigned int ep)
 	}
 
 	if (csr & UDP_CSR_RXSETUP) {
-		sam4s_usb_cp_from_fdr(0, (unsigned char*)&sam4s_usb_ctrl,
-			RXBYTECNT(ep), sizeof(sam4s_usb_ctrl));
+		unsigned int rxbytecnt = RXBYTECNT(ep);
+		TRACE("\033[35;1mhandle_epint/RXSETUP\033[0m",csr,
+			(ep<<24) | (*state << 16)|rxbytecnt);
 
-		TRACE(sam4s_usb_ctrl.bmRequestType |
-			(sam4s_usb_ctrl.bRequest << 8) |
-			(sam4s_usb_ctrl.wLength << 16));
+		sam4s_usb_cp_from_fdr(0, (unsigned char*)&sam4s_usb_ctrl,
+			sizeof(sam4s_usb_ctrl));
 
 		/* out request, bmRequestType.D7 == 0, i.e. host->device
 		   with additional data, so we have to wait..*/
@@ -442,16 +467,19 @@ sam4s_usb_handle_epint(unsigned int ep)
 void
 UDP_Handler()
 {
+	uint32_t isr;
 	uint32_t irq_pending;
 	unsigned int i;
 
 	while (1) {
-		irq_pending = UDP->UDP_ISR & UDP->UDP_IMR;
+		isr = UDP->UDP_ISR;
+		irq_pending = isr & UDP->UDP_IMR;
 		if (!irq_pending)
 			break;
 
 		/* handled last, therefore we compare ==, not & */
 		if (irq_pending == UDP_ISR_RXSUSP) {
+			TRACE("\033[36mUDP_Handler/RXSUSP\033[0m", isr, irq_pending);
 			UDP->UDP_IDR = UDP_IDR_RXSUSP;
 			UDP->UDP_IER = UDP_IER_WAKEUP | UDP_IER_RXRSM;
 			UDP->UDP_ICR = UDP_ICR_RXSUSP;
@@ -463,11 +491,14 @@ UDP_Handler()
 
 		/* start of frame */
 		if (irq_pending & UDP_ISR_SOFINT) {
+			TRACE("\033[36mUDP_Handler/SOFINT\033[0m", isr, irq_pending);
 			UDP->UDP_ICR = UDP_ICR_SOFINT;
 			break;
 		}
 
 		if (irq_pending & (UDP_ISR_RXRSM|UDP_ISR_WAKEUP)) {
+			TRACE("\033[36mUDP_Handler/RXRSM/WU\033[0m", isr, irq_pending);
+
 			/* acknowledge interrupt, disable wakeup, enable suspend */
 			UDP->UDP_ICR = (UDP_ICR_WAKEUP|UDP_ICR_RXRSM|UDP_ICR_WAKEUP);
 			UDP->UDP_IDR = UDP_IDR_RXRSM | UDP_IDR_WAKEUP;
@@ -479,6 +510,8 @@ UDP_Handler()
 		}
 
 		if (irq_pending & UDP_ISR_ENDBUSRES) {
+			TRACE("\033[36mUDP_Handler/ENDBUS\033[0m", isr, irq_pending);
+
 			sam4s_usb_dev_state = SAM4S_USB_DEV_DEFAULT;
 			UDP->UDP_ICR = UDP_ICR_ENDBUSRES;
 		
@@ -507,8 +540,6 @@ sam4s_usb_init()
 {
 	int i;
 
-	TRACE(1); /* init */
-
 	NVIC_DisableIRQ(UDP_IRQn);
 
 	UDP->UDP_TXVC = UDP_TXVC_TXVDIS; /* disable transceiver, disable pullups */
@@ -536,15 +567,12 @@ sam4s_usb_init()
 	NVIC_SetPriority (UDP_IRQn, 1);
 	NVIC_EnableIRQ(UDP_IRQn);
 
-	TRACE(2); /* init */
 }
 
 void
 sam4s_usb_off()
 {
 	int i;
-
-	TRACE(3);
 
 	NVIC_DisableIRQ(UDP_IRQn);
 
@@ -556,5 +584,4 @@ sam4s_usb_off()
 	UDP->UDP_TXVC = UDP_TXVC_TXVDIS; /* disable transceiver */
 	sam4s_clock_peripheral_onoff(ID_UDP, 0 /* off */);
 
-	TRACE(4);
 }

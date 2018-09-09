@@ -164,19 +164,16 @@ main()
 	printf("Hello, world.\r\n");
 	printf("=============\r\n\r\n");
 
-	printf("sam4s_usb_descr_cfg=%p\r\n", &sam4s_usb_descr_cfg);
-	printf("length=%d\r\n", sam4s_usb_descr_cfg.bLength);
-
 	for(;;) {
 		int k;
 
 		gps_steer_poll();
 
 		if(!trace_util_read(&trace) ) {
-			unsigned int c1 = trace.facility & 0xff;
-			unsigned int c2 = (trace.facility >> 8) & 0xff;
-			unsigned int line = trace.facility >> 16;
-			printf("t:%c %c %5d, %08lx\r\n", c1, c2, line, trace.payload);
+			/* "precision" for string must match
+			    sizeof(struct trace_util_data.text)! */
+			printf("%.32s 0x%08lx 0x%08lx\r\n",
+				trace.text,trace.a,trace.b);
 		}
 
 #if 0
