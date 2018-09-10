@@ -79,7 +79,6 @@ void
 gps_steer_init()
 {
 	sam4s_dac_init();
-	sam4s_timer_init();
 	gps_steer_dac_set(GPS_STEER_DAC_RANGE / 2);
 	gps_steer_reset();
 }
