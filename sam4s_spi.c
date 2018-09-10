@@ -21,7 +21,7 @@
 #include "sam4s_pinmux.h"
 #include "sam4s_clock.h"
 
-#include <sam4s4c.h>
+#include <sam4s8b.h>
 #include <stddef.h>
 
 static const uint8_t pcs_by_csnum[] = {

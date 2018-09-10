@@ -4,7 +4,10 @@
 /* macros for pin numbers on ports A, B, C */
 #define SAM4S_PINMUX_PA(n) n
 #define SAM4S_PINMUX_PB(n) ((n)+32)
+
+#if 0
 #define SAM4S_PINMUX_PC(n) ((n)+64)
+#endif
 
 extern void
 sam4s_pinmux_init();

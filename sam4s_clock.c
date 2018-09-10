@@ -20,7 +20,7 @@
 
 #include "sam4s_clock.h"
 #include "sam4s_pinmux.h"
-#include <sam4s4c.h>
+#include <sam4s8b.h>
 #include <string.h>
 
 #define CKGR_MOR_KEYVAL  CKGR_MOR_KEY(0x37)

@@ -18,7 +18,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include <sam4s4c.h>
+#include <sam4s8b.h>
 
 #include "trace_util.h"
 #include "sam4s_uart0_console.h"

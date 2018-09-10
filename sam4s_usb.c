@@ -2,7 +2,7 @@
 #include "sam4s_clock.h"
 #include "sam4s_usb_descriptors.h"
 #include "trace_util.h"
-#include <sam4s4c.h>
+#include <sam4s8b.h>
 #include <unistd.h>
 #include <string.h>
 

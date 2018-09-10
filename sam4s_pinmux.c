@@ -20,7 +20,7 @@
 #include "sam4s_pinmux.h"
 #include "sam4s_clock.h"
 
-#include <sam4s4c.h>
+#include <sam4s8b.h>
 
 #include <stddef.h>
 
@@ -37,7 +37,10 @@ sam4s_pinmux_init() {
 
 static Pio * const
 pio_addrs[] = {
-	PIOA, PIOB, PIOC
+	PIOA, PIOB,
+#if 0
+	PIOC
+#endif
 };
 
 #define SAM4S_PINMUX_PORT(pin) ((pin) >> 5)

@@ -17,7 +17,7 @@
 
 #include "sam4s_uart0_console.h"
 #include "circular_buffer.h"
-#include <sam4s4c.h>
+#include <sam4s8b.h>
 
 #include "sam4s_clock.h"
 #include "sam4s_pinmux.h"

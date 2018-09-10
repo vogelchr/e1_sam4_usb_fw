@@ -21,7 +21,7 @@
 #include "sam4s_pinmux.h"
 #include "sam4s_clock.h"
 
-#include <sam4s4c.h>
+#include <sam4s8b.h>
 
 /* The timer unfortunately only is 16bit, so we count the number
    of overflows as the 16 MSB of capture timestamps.*/
