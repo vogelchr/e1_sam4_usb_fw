@@ -15,8 +15,9 @@ const struct libusb_device_descriptor sam4s_usb_descr_dev = {
 	.bDeviceSubClass = 0,
 	.bDeviceProtocol = 0,
 	.bMaxPacketSize0 = 64, /* endpoint 0 max packet size */
-	.idVendor = 0x1245,
-	.idProduct = 0x2342,
+	.idVendor = 0x1d50,  /* OpenMoko, see registry repository at... */
+	.idProduct = 0x613b, /* https://github.com/openmoko/openmoko-usb-oui */
+	/* TODO: still not registered! */
 	.bcdDevice = 0x0100, /* 1.00 */
 	.iManufacturer = 0,
 	.iProduct = 0,
