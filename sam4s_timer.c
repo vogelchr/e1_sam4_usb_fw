@@ -20,10 +20,11 @@
 #include "sam4s_timer.h"
 #include "sam4s_pinmux.h"
 #include "sam4s_clock.h"
+#include "sam4s_ssc.h"     /* we need this to calculate bits/ssc-frame */
 
 #include <sam4s8b.h>
 
-#define SAM4S_TIMER_E1_CLOCKS_PER_FRAME 256
+#define SAM4S_TIMER_E1_CLOCKS_PER_DBLFRM (SAM4S_SSC_BITS_PER_LONGWORD*SAM4S_SSC_DBLFRM_LONGWORDS)
 
 /*
  * ==== PPS capture ====
@@ -79,12 +80,12 @@ void TC2_Handler()
 
 	/* to adjust the E1 phase, make a frame one bit longer, or shorter */
 	if (sam4s_timer_e1_phase_adj_state == SAM4S_TIMER_E1_PHASE_INC) {
-		TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_FRAME + 1;
+		TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_DBLFRM + 1;
 	} else if (sam4s_timer_e1_phase_adj_state == SAM4S_TIMER_E1_PHASE_DEC) {
-		TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_FRAME - 1;
+		TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_DBLFRM - 1;
 	} else {
 		/* set back to normal number of bits/frame, disable irq */
-		TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_FRAME;
+		TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_DBLFRM;
 		TC0->TC_CHANNEL[2].TC_IDR = TC_IER_COVFS;
 	}
 	sam4s_timer_e1_phase_adj_state = SAM4S_TIMER_E1_PHASE_IDLE;
@@ -213,7 +214,7 @@ sam4s_timer_init() {
 
 	TC0->TC_CHANNEL[2].TC_RA = 0;
 	TC0->TC_CHANNEL[2].TC_RB = 1;
-	TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_FRAME;
+	TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_DBLFRM;
 	TC0->TC_CHANNEL[2].TC_IDR = TC0->TC_CHANNEL[2].TC_IMR; /* disable all IRQ */
 
 	/* clear all interrupt flags by reading the status registers */

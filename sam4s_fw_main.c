@@ -15,11 +15,6 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <stdint.h>
-#include <stdlib.h>
-
-#include <sam4s8b.h>
-
 #include "trace_util.h"
 #include "sam4s_uart0_console.h"
 #include "sam4s_pinmux.h"
@@ -32,7 +27,11 @@
 #include "gps_steer.h"
 #include "trace_util.h"
 
+#include <stdint.h>
+#include <stdlib.h>
+#include <sam4s8b.h>
 #include <stdio.h>
+#include <string.h>
 
 unsigned char rxbuf[4] = {0, 0, 0, 0};
 unsigned char txbuf[4] = {0, 0, 0, 0};
@@ -86,6 +85,50 @@ idt82v2081_reg(unsigned char regnum, int write)
 
 struct trace_util_data trace;
 
+static unsigned int rx_process_ctr;
+static int last_dblfrm_processed;
+static int enable_sync;
+
+static void
+rx_process() {
+	if (last_dblfrm_processed == sam4s_ssc_rx_last_dblfrm)
+		return;
+
+	/* possibly process a single dblframe */
+
+	/* wrap-around happened? */
+	if (last_dblfrm_processed > sam4s_ssc_rx_last_dblfrm)
+		goto out; /* not yet */
+
+	rx_process_ctr++;
+	if (rx_process_ctr > 200) { /* give two dblframes (4ms) to sync */
+		int i;
+		for (i=0; i<SAM4S_SSC_BUF_DBLFRAMES; i++) {
+			uint32_t lwe, lwo; /* even and odd longwords */
+			lwe = sam4s_ssc_rx_buf[i*SAM4S_SSC_DBLFRM_LONGWORDS];
+			lwo = sam4s_ssc_rx_buf[i*SAM4S_SSC_DBLFRM_LONGWORDS+8];
+
+			if ((lwe & 0x7f000000) != 0x1b000000 ||
+			    (lwo & 0xc0000000) != 0x40000000) {
+				if (enable_sync)
+					printf("%d: lwe=0x%08x lwo=0x%08x\r\n", i, lwe, lwo);
+				break;
+
+			    }
+		}
+		/* sync markers didn't match up */
+		if (i != SAM4S_SSC_BUF_DBLFRAMES) {
+			rx_process_ctr = 0;
+
+			if (enable_sync) {
+				sam4s_timer_e1_phase_adj(1);
+			}
+		}
+	}
+out:
+	last_dblfrm_processed = sam4s_ssc_rx_last_dblfrm;
+}
+
 int
 main()
 {
@@ -132,42 +175,21 @@ main()
 	sam4s_uart0_console_init();
 
 	/* idle pattern */
-	for (i=0; i<(int)sizeof(sam4s_ssc_tx_buf); i++)
-		sam4s_ssc_tx_buf[i] = 0x00;
+	memset(sam4s_ssc_rx_buf, '\0', sizeof(sam4s_ssc_rx_buf));
+	memset(sam4s_ssc_tx_buf, '\0', sizeof(sam4s_ssc_tx_buf));
 
-	for (i=0; i<SAM4S_SSC_BUF_TX_NFRAMES; i++) {
-		int offs = i * SAM4S_SSC_FRAME_BYTES;
-		if (!(i % 2)) /* even frame */
-			sam4s_ssc_tx_buf[offs] = 0x1b; // C 0 0 1 1 0 1 1
-		else /* odd frame */
-			sam4s_ssc_tx_buf[offs] = 0x40; // 0 1 A S S S S S
-		sam4s_ssc_tx_buf[offs + 15] = 0x00;    // 0 0 0 0 S A S S
+	/* refill sync pattern */
+	for (i=0; i<SAM4S_SSC_BUF_DBLFRAMES; i++) {
+		/* even C 0 0 1 1 0 1 1 */
+		sam4s_ssc_tx_buf[i*SAM4S_SSC_DBLFRM_LONGWORDS] = 0x1b000000;
+		/* odd  0 1 A S S S S S */
+		sam4s_ssc_tx_buf[i*SAM4S_SSC_DBLFRM_LONGWORDS+8] = 0x40000000;  
 	}
-
-#if 0
-	printf("TX Buffer:\r\n");
-	for (i=0; i<sizeof(sam4s_ssc_tx_buf); i++) {
-		printf("%02x", sam4s_ssc_tx_buf[i]);
-		if (3 == (i % 4))
-			printf(" ");
-		if (15 == (i % 16))
-			printf("\r\n");
-	}
-#endif
 
 	sam4s_ssc_init();
 	sam4s_spi_init();
 	sam4s_usb_init();
 	sam4s_timer_init();
-
-	printf("TC0->TC_CHANNEL[2].TC_CV=%luu TC_SR=0x%08lx\r\n",
-		TC0->TC_CHANNEL[2].TC_CV,
-		TC0->TC_CHANNEL[2].TC_SR);
-	printf("ra=%lu, rb=%lu, rc=%lu cmr=0x%08lx\r\n",
-		TC0->TC_CHANNEL[2].TC_RA,
-		TC0->TC_CHANNEL[2].TC_RB,
-		TC0->TC_CHANNEL[2].TC_RC,
-		TC0->TC_CHANNEL[2].TC_CMR);
 
 	gps_steer_init();
 
@@ -180,25 +202,14 @@ main()
 
 		gps_steer_poll();
 
+		rx_process();
+
 		if(!trace_util_read(&trace) ) {
 			/* "precision" for string must match
 			    sizeof(struct trace_util_data.text)! */
 			printf("%.32s 0x%08lx 0x%08lx\r\n",
 				trace.text,trace.a,trace.b);
 		}
-
-#if 0
-		if (sam4s_ssc_rx_frame_ctr > 16) {
-			/* we have 4 buffers on rx */
-			if (((sam4s_ssc_rx_buf[0 ] & 0x7f) != 0x1b) ||
-			    ((sam4s_ssc_rx_buf[32] & 0xc0) != 0x40) ||
-    			    ((sam4s_ssc_rx_buf[64] & 0x7f) != 0x1b) ||
-			    ((sam4s_ssc_rx_buf[96] & 0xc0) != 0x40)) {
-			    	printf("s\r\n");
-				sam4s_ssc_realign_adjust(0);
-			}
-		}
-#endif
 
 		k = sam4s_uart0_console_rx();
 		if (k == -1)
@@ -243,37 +254,33 @@ main()
 					flip_lsb_msb(rxbuf[1]));
 		}
 
-		if (k == 'd') {
-			printf("sam4s_ssc: %lu tx irqs, %lu rx irqs\r\n",
-				sam4s_ssc_tx_irq_ctr,sam4s_ssc_rx_irq_ctr);
-		}
-
-		if (k == '0') {
-			sam4s_ssc_realign_reset(0);
-			printf("Frame realignment reset.\r\n");
-		}
-
-		if (k == '+' || k == '-') {
-			unsigned int align_bits = sam4s_ssc_realign_adjust(k == '-');
-			printf("Alignment changed to %u.\r\n", align_bits);
-		}
-
 		if (k == 'r') {
-			printf("last rx: %d, rx_irq %lu tx_irq %lu under %lu\r\n",
-				sam4s_ssc_rx_last_frame,
+			uint32_t *p = sam4s_ssc_rx_buf;
+
+			printf("last rx: %d/tx %d, rx_irq %u tx_irq %u over %u under %u\r\n",
+				sam4s_ssc_rx_last_dblfrm,
+				sam4s_ssc_tx_last_dblfrm,
 				sam4s_ssc_rx_irq_ctr,
 				sam4s_ssc_tx_irq_ctr,
+				sam4s_ssc_irq_overflow_ctr,
 				sam4s_ssc_irq_underflow_ctr);
-			for (i=0; i<sizeof(sam4s_ssc_rx_buf); i++) {
-				if ((i % SAM4S_SSC_FRAME_BYTES) == 0)
-					printf("Frame %d:", i / SAM4S_SSC_FRAME_BYTES);
-				if ((i % SAM4S_SSC_FRAME_BYTES) == SAM4S_SSC_FRAME_BYTES/2)
-					printf("        ");
-				if (0 == i % 4)
-					printf(" ");
-				printf("%02x", sam4s_ssc_rx_buf[i]);
-				if (i % 16 == 15)
+
+			for (i=0; i<SAM4S_SSC_DBLFRM_LONGWORDS*SAM4S_SSC_BUF_DBLFRAMES; i++) {
+				if ((i % 8) == 0)
+					printf("Frame %d:", i / 8);
+				printf(" %08lx", *p++);
+				if ((i % 8) == 7)
 					printf("\r\n");
+			}
+
+			for (i=0; i<SAM4S_SSC_BUF_DBLFRAMES; i++) {
+				uint32_t lwe, lwo; /* even and odd longwords */
+				lwe = sam4s_ssc_rx_buf[i*SAM4S_SSC_DBLFRM_LONGWORDS];
+				lwo = sam4s_ssc_rx_buf[i*SAM4S_SSC_DBLFRM_LONGWORDS+8];
+
+				printf("%d: lwe=0x%08lx lwo=0x%08lx\r\n",i,
+					lwe & 0x7f000000,
+					lwo & 0xc0000000);
 			}
 		}
 
@@ -295,6 +302,10 @@ main()
 					TC0->TC_CHANNEL[i].TC_RC);
 			}
 		}
+		if (k == 's')
+			enable_sync++;
+		if (k== 'S')
+			enable_sync=0;
 
 		if (k == '<' || k == '>') {
 			i = sam4s_timer_e1_phase_adj(k == '>');
