@@ -12,4 +12,7 @@ extern void sam4s_timer_init();
 extern unsigned int
 sam4s_timer_capt_poll(uint32_t *rising, uint32_t *falling );
 
+extern int
+sam4s_timer_e1_phase_adj(int do_inc);
+
 #endif

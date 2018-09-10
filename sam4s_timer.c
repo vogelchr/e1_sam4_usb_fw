@@ -23,31 +23,90 @@
 
 #include <sam4s8b.h>
 
-/* The timer unfortunately only is 16bit, so we count the number
-   of overflows as the 16 MSB of capture timestamps.*/
+#define SAM4S_TIMER_E1_CLOCKS_PER_FRAME 256
+
+/*
+ * ==== PPS capture ====
+ *
+ * The timer unfortunately only is 16bit, so we count the number
+ *  of overflows as the 16 MSB of capture timestamps.
+ */
 static uint16_t sam4s_timer_capt_msb;
 static uint32_t sam4s_timer_capt_rising;         /* msb << 16 | timstamp */
 static uint32_t sam4s_timer_capt_falling;        /* for rising & falling edge */
 static volatile uint32_t sam4s_timer_capt_flags;
 
-void TC0_Handler()
-{
-	uint32_t sr = TC0->TC_CHANNEL[0].TC_SR; /* status register */
-	uint16_t tv = TC0->TC_CHANNEL[0].TC_CV; /* timer value */
+/*
+ * ==== E1 frame synchronization ====
+ *
+ * we make one timer period one clock longer, or shorter
+ */
 
-	if (!(sr & TC_SR_COVFS)) /* only interrupt source is overflow, so... */
-		return;          /* this should should never happen */
+enum sam4s_timer_e1_phase_adj_state {
+	SAM4S_TIMER_E1_PHASE_IDLE,
+	SAM4S_TIMER_E1_PHASE_INC,
+	SAM4S_TIMER_E1_PHASE_DEC
+};
+
+static volatile enum sam4s_timer_e1_phase_adj_state sam4s_timer_e1_phase_adj_state;
+
+extern int
+sam4s_timer_e1_phase_adj(int do_inc) {
+	enum sam4s_timer_e1_phase_adj_state state = sam4s_timer_e1_phase_adj_state;
+	uint32_t dummy;
+
+	if (state != SAM4S_TIMER_E1_PHASE_IDLE)
+		return -1; /* cannot adjust right now */
+
+	state = do_inc ? SAM4S_TIMER_E1_PHASE_INC : SAM4S_TIMER_E1_PHASE_DEC;
+
+	__disable_irq();
+	/* Reading status register clears COVSFS interrupt flat, we only want
+	   it to fire right after next overflow! */
+	sam4s_timer_e1_phase_adj_state = state;
+	dummy = TC0->TC_CHANNEL[2].TC_SR;
+	TC0->TC_CHANNEL[2].TC_IER = TC_IER_CPCS; /* match register C */
+	__enable_irq();
+	return 0;
+}
+
+void TC2_Handler()
+{
+	uint32_t sr2 = TC0->TC_CHANNEL[2].TC_SR; /* reading SR clear irq flags */
+
+	if (!(sr2 & TC_SR_CPCS)) /* no match on register c? */
+		return;  /* should never happen */
+
+	/* to adjust the E1 phase, make a frame one bit longer, or shorter */
+	if (sam4s_timer_e1_phase_adj_state == SAM4S_TIMER_E1_PHASE_INC) {
+		TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_FRAME + 1;
+	} else if (sam4s_timer_e1_phase_adj_state == SAM4S_TIMER_E1_PHASE_DEC) {
+		TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_FRAME - 1;
+	} else {
+		/* set back to normal number of bits/frame, disable irq */
+		TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_FRAME;
+		TC0->TC_CHANNEL[2].TC_IDR = TC_IER_COVFS;
+	}
+	sam4s_timer_e1_phase_adj_state = SAM4S_TIMER_E1_PHASE_IDLE;
+}
+
+void TC0_Handler() {
+	uint32_t sr0 = TC0->TC_CHANNEL[0].TC_SR; /* status register */
+	uint16_t tv = TC0->TC_CHANNEL[0].TC_CV;  /* timer value */
+
+	if (!(sr0 & TC_SR_COVFS)) /* should never happen */
+		return;
 
 	/* we read, in order: status register, timer value and then
-	   the capture registers. If status register read in the first
-	   step indicates a timer capture event and the captured value
-	   is yet smaller than tv, this means that the capture has happened
-	   in between the overflow of TV from MAX to 0 and the moment we
-	   handle the interrupt. Therefore the msb (number of overflows)
-	   for this capture event is one more than the (at this point in
-	   the IRQ handler not yet incremented) msb counter. */
+	the capture registers. If status register read in the first
+	step indicates a timer capture event and the captured value
+	is yet smaller than tv, this means that the capture has happened
+	in between the overflow of TV from MAX to 0 and the moment we
+	handle the interrupt. Therefore the msb (number of overflows)
+	for this capture event is one more than the (at this point in
+	the IRQ handler not yet incremented) msb counter. */
 
-	if (sr & TC_SR_LDRAS) {
+	if (sr0 & TC_SR_LDRAS) {
 		uint16_t ra_msb = sam4s_timer_capt_msb;
 		uint16_t ra = TC0->TC_CHANNEL[0].TC_RA;
 
@@ -57,7 +116,7 @@ void TC0_Handler()
 		sam4s_timer_capt_flags |= SAM4S_TIMER_CAPT_RISING;
 	}
 
-	if (sr & TC_SR_LDRBS) {
+	if (sr0 & TC_SR_LDRBS) {
 		uint16_t rb_msb = sam4s_timer_capt_msb;
 		uint16_t rb = TC0->TC_CHANNEL[0].TC_RB;
 
@@ -72,30 +131,38 @@ void TC0_Handler()
 
 void
 sam4s_timer_init() {
-	sam4s_clock_peripheral_onoff(ID_TC0, 1/*on*/);
+	uint32_t dummy;
+
+	/* turn on clock to three *CHANNELS*, we'll turn off ch1 again later */
+	sam4s_clock_peripheral_onoff(ID_TC0, 1 /*on  */);
+	sam4s_clock_peripheral_onoff(ID_TC1, 1 /*on */);
+	sam4s_clock_peripheral_onoff(ID_TC2, 1 /*on  */);
+
+	/* ch2 providing E1 frame clock, configure output TIOB2 */
 	sam4s_pinmux_function(SAM4S_PINMUX_PA(27), SAM4S_PINMUX_B); /* TIOB2 */
-	sam4s_pinmux_function(SAM4S_PINMUX_PA(29), SAM4S_PINMUX_B); /* TCLK2 */
+	// sam4s_pinmux_function(SAM4S_PINMUX_PA(29), SAM4S_PINMUX_B); /* TCLK2 input */
 
-	TC0->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKEN;
-	TC0->TC_WPMR = TC_WPMR_WPKEY_PASSWD | 0; /* clear WPEN bit */
+	TC0->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKDIS;
+	TC0->TC_CHANNEL[1].TC_CCR = TC_CCR_CLKDIS;
+	TC0->TC_CHANNEL[2].TC_CCR = TC_CCR_CLKDIS;
 
-	TC0->TC_CHANNEL[1].TC_CCR = TC_CCR_CLKEN;
-	TC0->TC_CHANNEL[2].TC_CCR = TC_CCR_CLKEN;
-
-	/* channel 0 capture, overflow counts the most significant bits */
+	/*
+	 * channel 0 is used in capture mode and will capture the PPS edges
+	 * from the GPS, we run the ISR on overflow
+	 */
 	TC0->TC_CHANNEL[0].TC_CMR = TC_CMR_TCCLKS_TIMER_CLOCK1 /* MCLK/2 */ |
 		TC_CMR_LDRA_RISING | TC_CMR_LDRB_FALLING;
-	TC0->TC_CHANNEL[0].TC_RA = 1111;
-	TC0->TC_CHANNEL[0].TC_RB = 2222;
-	TC0->TC_CHANNEL[0].TC_RC = 3333;
+	TC0->TC_CHANNEL[0].TC_RA = 0;
+	TC0->TC_CHANNEL[0].TC_RB = 0;
+	TC0->TC_CHANNEL[0].TC_RC = 0;
 	TC0->TC_CHANNEL[0].TC_IDR = TC0->TC_CHANNEL[0].TC_IMR; /* disable all */
 	TC0->TC_CHANNEL[0].TC_IER = TC_IER_COVFS; /* fire ISR on overflow */
 
 	/* channel 1 is unused  */
-	TC0->TC_CHANNEL[1].TC_CMR = TC_CMR_WAVE;
-	TC0->TC_CHANNEL[1].TC_RA = 2222; /* just testing */
-	TC0->TC_CHANNEL[1].TC_RB = 3333;
-	TC0->TC_CHANNEL[1].TC_RC = 4444;
+	TC0->TC_CHANNEL[1].TC_CMR = 0;
+	TC0->TC_CHANNEL[1].TC_RA = 0; /* just testing */
+	TC0->TC_CHANNEL[1].TC_RB = 0;
+	TC0->TC_CHANNEL[1].TC_RC = 0;
 	TC0->TC_CHANNEL[1].TC_IDR = TC0->TC_CHANNEL[1].TC_IMR; /* disable all */
 
 	/*
@@ -104,15 +171,13 @@ sam4s_timer_init() {
 	 * 
 	 * We increment on the rising edge, because signals in SSC are sampled
 	 * on the *falling* edge. (check this!)
-	 * 
+	 *
+	 * We set the output on overflow and clear the output at 0, so it's
+	 * only on for one clock cycle.
 	 */
 
-	TC0->TC_CHANNEL[2].TC_RA = 0x42;
-	TC0->TC_CHANNEL[2].TC_RB = 128;
-	TC0->TC_CHANNEL[2].TC_RC = 255;  /* 1 frame */
-
 	TC0->TC_CHANNEL[2].TC_CMR =
-		TC_CMR_TCCLKS_TIMER_CLOCK2 |   /* clock XC2 = TCLK2 */
+		TC_CMR_TCCLKS_XC2 |   /* clock XC2 = TCLK2 */
 		/* TC_CMR_CLKI | */   /* inc on falling(CLKI)/rising(0) edge */
 		TC_CMR_EEVT_XC0 |     /* anything != TIOB makes TIOB an output */
 		TC_CMR_WAVSEL_UP_RC | /* count from 0..TC_RC */
@@ -121,18 +186,49 @@ sam4s_timer_init() {
 		TC_CMR_ACPC_NONE |    /* match TC_RC -> TIOA2: none */
 		TC_CMR_AEEVT_NONE |   /* ext. event  -> TIOA2: none */
 		TC_CMR_ASWTRG_NONE |  /* sw trigger  -> TIOA2: none */
-		TC_CMR_BCPB_SET |     /* match TC_RB -> TIOB2: set output */
-		TC_CMR_BCPC_CLEAR |   /* match TC_RC -> TIOB2: clear output */
+		TC_CMR_BCPB_CLEAR |   /* match TC_RB -> TIOB2: clr output */
+		TC_CMR_BCPC_SET   |   /* match TC_RC -> TIOB2: set output */
 		TC_CMR_BEEVT_NONE |   /* ext. event  -> TIOB2: none */
 		TC_CMR_BSWTRG_NONE;   /* sw trigger  -> TIOB2: none */
+
+	/*
+	 * RA is unused, RB=1 is used for frame generation
+	 *
+	 *       +--+  +--+  +--+  +--+  +--+  +--+  +--+  CLK
+	 *       |  |  |  |  |  |  |  |  |  |  |  |  |  |
+	 * CLK --+  +--+  +--+  +--+  +--+  +--+  +--+  +--
+	 * 
+	 *       :     :     :     :     :     :     :
+	 *       v     v     v     v     v     v     v
+	 * CV:   RC-2  RC-1  0     1     2     3     4
+	 *                  ^
+	 *               CV=RC sets TIOB2 high and immediately resets ctr => 0
+	 *                  v
+	 *                   +-----+
+	 * TIOB:             |     |
+	 *       ------------+     +-----------------------
+	 *                         ^
+	 *                       CV=RB=1 sets TIOB2 low
+	 */
+
+	TC0->TC_CHANNEL[2].TC_RA = 0;
+	TC0->TC_CHANNEL[2].TC_RB = 1;
+	TC0->TC_CHANNEL[2].TC_RC = SAM4S_TIMER_E1_CLOCKS_PER_FRAME;
 	TC0->TC_CHANNEL[2].TC_IDR = TC0->TC_CHANNEL[2].TC_IMR; /* disable all IRQ */
 
-	/* pps capture */
-	TC0->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKEN; /* start channel 0 */
-	TC0->TC_CHANNEL[2].TC_CCR = TC_CCR_CLKEN; /* start channel 2 */
-	TC0->TC_BCR = TC_BCR_SYNC;
+	/* clear all interrupt flags by reading the status registers */
+	dummy = TC0->TC_CHANNEL[0].TC_SR;
+	dummy = TC0->TC_CHANNEL[1].TC_SR;
+	dummy = TC0->TC_CHANNEL[2].TC_SR;
+
+	TC0->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKEN; /* enable channel 0 */
+	TC0->TC_CHANNEL[2].TC_CCR = TC_CCR_CLKEN; /* enable channel 2 */
+	TC0->TC_BCR = TC_BCR_SYNC;                /* start all channels */
+
+	sam4s_clock_peripheral_onoff(ID_TC1, 0/* off, not needed */);
 
 	NVIC_EnableIRQ(TC0_IRQn);
+	NVIC_EnableIRQ(TC2_IRQn);
 }
 
 extern unsigned int

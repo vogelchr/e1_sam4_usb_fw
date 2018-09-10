@@ -296,6 +296,10 @@ main()
 			}
 		}
 
+		if (k == '<' || k == '>') {
+			i = sam4s_timer_e1_phase_adj(k == '>');
+			printf("phase_adj: %d\r\n",i);
+		}
 	}
 
 	while(1);
