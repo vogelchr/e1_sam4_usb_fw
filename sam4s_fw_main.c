@@ -28,6 +28,7 @@
 #include "sam4s_spi.h"
 #include "sam4s_usb.h"
 #include "sam4s_usb_descriptors.h"
+#include "sam4s_timer.h"
 #include "gps_steer.h"
 #include "trace_util.h"
 
@@ -157,7 +158,17 @@ main()
 	sam4s_ssc_init();
 	sam4s_spi_init();
 	sam4s_usb_init();
-	
+	sam4s_timer_init();
+
+	printf("TC0->TC_CHANNEL[2].TC_CV=%luu TC_SR=0x%08lx\r\n",
+		TC0->TC_CHANNEL[2].TC_CV,
+		TC0->TC_CHANNEL[2].TC_SR);
+	printf("ra=%lu, rb=%lu, rc=%lu cmr=0x%08lx\r\n",
+		TC0->TC_CHANNEL[2].TC_RA,
+		TC0->TC_CHANNEL[2].TC_RB,
+		TC0->TC_CHANNEL[2].TC_RC,
+		TC0->TC_CHANNEL[2].TC_CMR);
+
 	gps_steer_init();
 
 	printf("=============\r\n");
@@ -270,6 +281,20 @@ main()
 			sam4s_usb_init();
 		if (k == 'U')
 			sam4s_usb_off();
+		if (k == 't') {
+			printf("\r\n\r\nTimer Status\r\n------------\r\n");
+			for (i=0; i<3; i++) {
+				printf("TC0-Ch%d: TC_CMR=0x%08lx SMMR=0x%08lx SR=0x%08lx\r\n",
+					i, TC0->TC_CHANNEL[i].TC_CMR,
+					TC0->TC_CHANNEL[i].TC_SMMR,
+					TC0->TC_CHANNEL[i].TC_SR);
+				printf("         cv=%-5lu ra=%-5lu rb=%-5lu rc=%-5lu\r\n",
+					TC0->TC_CHANNEL[i].TC_CV,
+					TC0->TC_CHANNEL[i].TC_RA,
+					TC0->TC_CHANNEL[i].TC_RB,
+					TC0->TC_CHANNEL[i].TC_RC);
+			}
+		}
 
 	}
 

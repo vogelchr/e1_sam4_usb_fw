@@ -73,37 +73,66 @@ void TC0_Handler()
 void
 sam4s_timer_init() {
 	sam4s_clock_peripheral_onoff(ID_TC0, 1/*on*/);
+	sam4s_pinmux_function(SAM4S_PINMUX_PA(27), SAM4S_PINMUX_B); /* TIOB2 */
+	sam4s_pinmux_function(SAM4S_PINMUX_PA(29), SAM4S_PINMUX_B); /* TCLK2 */
+
+	TC0->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKEN;
+	TC0->TC_WPMR = TC_WPMR_WPKEY_PASSWD | 0; /* clear WPEN bit */
+
+	TC0->TC_CHANNEL[1].TC_CCR = TC_CCR_CLKEN;
+	TC0->TC_CHANNEL[2].TC_CCR = TC_CCR_CLKEN;
 
 	/* channel 0 capture, overflow counts the most significant bits */
-	TC0->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKDIS;
-	TC0->TC_CHANNEL[0].TC_CMR = TC_CMR_TCCLKS_TIMER_CLOCK1 |
+	TC0->TC_CHANNEL[0].TC_CMR = TC_CMR_TCCLKS_TIMER_CLOCK1 /* MCLK/2 */ |
 		TC_CMR_LDRA_RISING | TC_CMR_LDRB_FALLING;
-	TC0->TC_CHANNEL[0].TC_RA = 0;
-	TC0->TC_CHANNEL[0].TC_RB = 0;
-	TC0->TC_CHANNEL[0].TC_RC = 0;
+	TC0->TC_CHANNEL[0].TC_RA = 1111;
+	TC0->TC_CHANNEL[0].TC_RB = 2222;
+	TC0->TC_CHANNEL[0].TC_RC = 3333;
 	TC0->TC_CHANNEL[0].TC_IDR = TC0->TC_CHANNEL[0].TC_IMR; /* disable all */
 	TC0->TC_CHANNEL[0].TC_IER = TC_IER_COVFS; /* fire ISR on overflow */
 
 	/* channel 1 is unused  */
-	TC0->TC_CHANNEL[1].TC_CCR = TC_CCR_CLKDIS;
-	TC0->TC_CHANNEL[1].TC_CMR = 0;
-	TC0->TC_CHANNEL[1].TC_RA = 0;
-	TC0->TC_CHANNEL[1].TC_RB = 0;
-	TC0->TC_CHANNEL[1].TC_RC = 0;
+	TC0->TC_CHANNEL[1].TC_CMR = TC_CMR_WAVE;
+	TC0->TC_CHANNEL[1].TC_RA = 2222; /* just testing */
+	TC0->TC_CHANNEL[1].TC_RB = 3333;
+	TC0->TC_CHANNEL[1].TC_RC = 4444;
 	TC0->TC_CHANNEL[1].TC_IDR = TC0->TC_CHANNEL[1].TC_IMR; /* disable all */
 
-	/* channel 2 is unused */
-	TC0->TC_CHANNEL[2].TC_CCR = TC_CCR_CLKDIS;
-	TC0->TC_CHANNEL[2].TC_CMR = 0;
-	TC0->TC_CHANNEL[2].TC_RA = 0;
-	TC0->TC_CHANNEL[2].TC_RB = 0;
-	TC0->TC_CHANNEL[2].TC_RC = 0;
-	TC0->TC_CHANNEL[2].TC_IDR = TC0->TC_CHANNEL[2].TC_IMR; /* disable all */
+	/*
+	 * channel 2 is used in waveform mode, to generate the frame signal
+	 * for the SSC on TIOB2, clocked by TCLK2 (2.048 MHz).
+	 * 
+	 * We increment on the rising edge, because signals in SSC are sampled
+	 * on the *falling* edge. (check this!)
+	 * 
+	 */
 
-	TC0->TC_BMR = 0;
+	TC0->TC_CHANNEL[2].TC_RA = 0x42;
+	TC0->TC_CHANNEL[2].TC_RB = 128;
+	TC0->TC_CHANNEL[2].TC_RC = 255;  /* 1 frame */
+
+	TC0->TC_CHANNEL[2].TC_CMR =
+		TC_CMR_TCCLKS_TIMER_CLOCK2 |   /* clock XC2 = TCLK2 */
+		/* TC_CMR_CLKI | */   /* inc on falling(CLKI)/rising(0) edge */
+		TC_CMR_EEVT_XC0 |     /* anything != TIOB makes TIOB an output */
+		TC_CMR_WAVSEL_UP_RC | /* count from 0..TC_RC */
+		TC_CMR_WAVE |         /* waveform mode */
+		TC_CMR_ACPA_NONE |    /* match TC_RA -> TIOA2: none */
+		TC_CMR_ACPC_NONE |    /* match TC_RC -> TIOA2: none */
+		TC_CMR_AEEVT_NONE |   /* ext. event  -> TIOA2: none */
+		TC_CMR_ASWTRG_NONE |  /* sw trigger  -> TIOA2: none */
+		TC_CMR_BCPB_SET |     /* match TC_RB -> TIOB2: set output */
+		TC_CMR_BCPC_CLEAR |   /* match TC_RC -> TIOB2: clear output */
+		TC_CMR_BEEVT_NONE |   /* ext. event  -> TIOB2: none */
+		TC_CMR_BSWTRG_NONE;   /* sw trigger  -> TIOB2: none */
+	TC0->TC_CHANNEL[2].TC_IDR = TC0->TC_CHANNEL[2].TC_IMR; /* disable all IRQ */
+
+	/* pps capture */
+	TC0->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKEN; /* start channel 0 */
+	TC0->TC_CHANNEL[2].TC_CCR = TC_CCR_CLKEN; /* start channel 2 */
+	TC0->TC_BCR = TC_BCR_SYNC;
 
 	NVIC_EnableIRQ(TC0_IRQn);
-	TC0->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKEN|TC_CCR_SWTRG; /* start channel 0 */
 }
 
 extern unsigned int
