@@ -20,9 +20,11 @@
 
 #include "sam4s_ssc.h"
 #include <sam4s4c.h>
+#include <string.h> // memcpy
 
 #include "sam4s_clock.h"
 #include "sam4s_pinmux.h"
+#include "e1_mgmt.h"
 
 /* externally visible buffer for received realigned data */
 uint32_t sam4s_ssc_rx_buf[SAM4S_SSC_DBLFRM_LONGWORDS*SAM4S_SSC_BUF_DBLFRAMES];
@@ -34,11 +36,22 @@ uint32_t sam4s_ssc_tx_buf[SAM4S_SSC_DBLFRM_LONGWORDS*SAM4S_SSC_BUF_DBLFRAMES];
 volatile int sam4s_ssc_tx_last_dblfrm;
 static int sam4s_ssc_tx_curr_dblfrm;
 
-/* statistics */
-unsigned int sam4s_ssc_tx_irq_ctr;
-unsigned int sam4s_ssc_rx_irq_ctr;
-unsigned int sam4s_ssc_irq_underflow_ctr;
-unsigned int sam4s_ssc_irq_overflow_ctr;
+struct sam4s_ssc_irqstats {
+	unsigned int tx_ctr;
+	unsigned int tx_underflow;
+	unsigned int rx_ctr;
+	unsigned int rx_overflow;
+};
+
+static struct sam4s_ssc_irqstats sam4s_ssc_irqstats;
+
+void
+sam4s_ssc_get_irqstats(struct sam4s_ssc_irqstats *p)
+{
+	__disable_irq();
+	memcpy(p, &sam4s_ssc_irqstats, sizeof(sam4s_ssc_irqstats));
+	__enable_irq();
+}
 
 /* start or re-start the DMA, also happens on over/underflow which
    basically only happens during debugging (when CPU is stopped) */
@@ -75,7 +88,7 @@ SSC_Handler()
 
 		if (SSC->SSC_SR & SSC_SR_RXBUFF) {
 			/* should never happen! */
-			sam4s_ssc_irq_overflow_ctr++;
+			sam4s_ssc_irqstats.rx_overflow++;
 			sam4s_ssc_init_rx_dma();
 		}
 
@@ -90,16 +103,18 @@ SSC_Handler()
 		PDC_SSC->PERIPH_RNPR = (uint32_t) &sam4s_ssc_rx_buf[cp*SAM4S_SSC_DBLFRM_LONGWORDS];
 		PDC_SSC->PERIPH_RNCR = SAM4S_SSC_DBLFRM_LONGWORDS;
 
+		e1_mgmt_rx_dblfrm_irq(&sam4s_ssc_rx_buf[sam4s_ssc_rx_last_dblfrm*SAM4S_SSC_DBLFRM_LONGWORDS]);
+
 		/* debug */
-		sam4s_ssc_rx_irq_ctr++;
-		sam4s_pinmux_gpio_set(SAM4S_PINMUX_PA(25),sam4s_ssc_rx_irq_ctr & 1);
+		sam4s_ssc_irqstats.rx_ctr++;
+		sam4s_pinmux_gpio_set(SAM4S_PINMUX_PA(25),sam4s_ssc_irqstats.rx_ctr & 1);
 	}
 
 	if (SSC->SSC_SR & SSC_SR_ENDTX) {
 		int cp = sam4s_ssc_tx_curr_dblfrm;
 
 		if (SSC->SSC_SR & SSC_SR_TXBUFE) {
-			sam4s_ssc_irq_underflow_ctr++;
+			sam4s_ssc_irqstats.tx_underflow++;
 			sam4s_ssc_init_tx_dma();
 		}
 
@@ -112,8 +127,8 @@ SSC_Handler()
 		PDC_SSC->PERIPH_TNPR = (uint32_t) &sam4s_ssc_tx_buf[cp * SAM4S_SSC_DBLFRM_LONGWORDS];
 		PDC_SSC->PERIPH_TNCR = SAM4S_SSC_DBLFRM_LONGWORDS;
 
-		sam4s_ssc_tx_irq_ctr++;
-		sam4s_pinmux_gpio_set(SAM4S_PINMUX_PA(26),sam4s_ssc_tx_irq_ctr & 1);
+		sam4s_ssc_irqstats.tx_ctr++;
+		sam4s_pinmux_gpio_set(SAM4S_PINMUX_PA(26),sam4s_ssc_irqstats.tx_ctr & 1);
 	}
 }
 

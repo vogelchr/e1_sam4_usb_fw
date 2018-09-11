@@ -26,6 +26,7 @@
 #include "sam4s_timer.h"
 #include "gps_steer.h"
 #include "trace_util.h"
+#include "e1_mgmt.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -89,46 +90,6 @@ static unsigned int rx_process_ctr;
 static int last_dblfrm_processed;
 static int enable_sync;
 
-static void
-rx_process() {
-	if (last_dblfrm_processed == sam4s_ssc_rx_last_dblfrm)
-		return;
-
-	/* possibly process a single dblframe */
-
-	/* wrap-around happened? */
-	if (last_dblfrm_processed > sam4s_ssc_rx_last_dblfrm)
-		goto out; /* not yet */
-
-	rx_process_ctr++;
-	if (rx_process_ctr > 200) { /* give two dblframes (4ms) to sync */
-		int i;
-		for (i=0; i<SAM4S_SSC_BUF_DBLFRAMES; i++) {
-			uint32_t lwe, lwo; /* even and odd longwords */
-			lwe = sam4s_ssc_rx_buf[i*SAM4S_SSC_DBLFRM_LONGWORDS];
-			lwo = sam4s_ssc_rx_buf[i*SAM4S_SSC_DBLFRM_LONGWORDS+8];
-
-			if ((lwe & 0x7f000000) != 0x1b000000 ||
-			    (lwo & 0xc0000000) != 0x40000000) {
-				if (enable_sync)
-					printf("%d: lwe=0x%08x lwo=0x%08x\r\n", i, lwe, lwo);
-				break;
-
-			    }
-		}
-		/* sync markers didn't match up */
-		if (i != SAM4S_SSC_BUF_DBLFRAMES) {
-			rx_process_ctr = 0;
-
-			if (enable_sync) {
-				sam4s_timer_e1_phase_adj(1);
-			}
-		}
-	}
-out:
-	last_dblfrm_processed = sam4s_ssc_rx_last_dblfrm;
-}
-
 int
 main()
 {
@@ -174,24 +135,13 @@ main()
 
 	sam4s_uart0_console_init();
 
-	/* idle pattern */
-	memset(sam4s_ssc_rx_buf, '\0', sizeof(sam4s_ssc_rx_buf));
-	memset(sam4s_ssc_tx_buf, '\0', sizeof(sam4s_ssc_tx_buf));
-
-	/* refill sync pattern */
-	for (i=0; i<SAM4S_SSC_BUF_DBLFRAMES; i++) {
-		/* even C 0 0 1 1 0 1 1 */
-		sam4s_ssc_tx_buf[i*SAM4S_SSC_DBLFRM_LONGWORDS] = 0x1b000000;
-		/* odd  0 1 A S S S S S */
-		sam4s_ssc_tx_buf[i*SAM4S_SSC_DBLFRM_LONGWORDS+8] = 0x40000000;  
-	}
-
 	sam4s_ssc_init();
 	sam4s_spi_init();
 	sam4s_usb_init();
 	sam4s_timer_init();
 
 	gps_steer_init();
+	e1_mgmt_init();
 
 	printf("=============\r\n");
 	printf("Hello, world.\r\n");
@@ -201,8 +151,7 @@ main()
 		int k;
 
 		gps_steer_poll();
-
-		rx_process();
+		e1_mgmt_poll();
 
 		if(!trace_util_read(&trace) ) {
 			/* "precision" for string must match
@@ -257,6 +206,7 @@ main()
 		if (k == 'r') {
 			uint32_t *p = sam4s_ssc_rx_buf;
 
+#if 0
 			printf("last rx: %d/tx %d, rx_irq %u tx_irq %u over %u under %u\r\n",
 				sam4s_ssc_rx_last_dblfrm,
 				sam4s_ssc_tx_last_dblfrm,
@@ -264,6 +214,7 @@ main()
 				sam4s_ssc_tx_irq_ctr,
 				sam4s_ssc_irq_overflow_ctr,
 				sam4s_ssc_irq_underflow_ctr);
+#endif
 
 			for (i=0; i<SAM4S_SSC_DBLFRM_LONGWORDS*SAM4S_SSC_BUF_DBLFRAMES; i++) {
 				if ((i % 8) == 0)
