@@ -515,12 +515,21 @@ UDP_Handler()
 			sam4s_usb_dev_state = SAM4S_USB_DEV_DEFAULT;
 			UDP->UDP_ICR = UDP_ICR_ENDBUSRES;
 		
+			UDP->UDP_RST_EP = (1<<0)|(1<<4)|(1<<5); /* reset... */
+
 			/* configure endpoint 0 as control endpoint */
-			UDP->UDP_RST_EP = 1 << 0; /* reset, then enable... */
+			/* 4 is isochronous in, 5 is isochronous out */
 			UDP->UDP_CSR[0] = (UDP_CSR_EPTYPE_CTRL | UDP_CSR_EPEDS);
+			UDP->UDP_CSR[4] = (UDP_CSR_EPTYPE_ISO_IN | UDP_CSR_EPEDS);
+			UDP->UDP_CSR[5] = (UDP_CSR_EPTYPE_ISO_OUT | UDP_CSR_EPEDS);
+
+			sam4s_usb_ep_state[0] = SAM4S_USB_EP_IDLE;
+			sam4s_usb_ep_state[4] = SAM4S_USB_EP_IDLE;
+			sam4s_usb_ep_state[5] = SAM4S_USB_EP_IDLE;
+
 			UDP->UDP_RST_EP = 0;      /* clear reset flag */
-			UDP->UDP_IER    = 1 << 0; /* enable interrupt */
-			sam4s_usb_ep_state[0] =  SAM4S_USB_EP_IDLE;
+			UDP->UDP_IER = (1<<0)|(1<<4)|(1<<5); /* enable interrupts */
+
 			break;
 		}
 
