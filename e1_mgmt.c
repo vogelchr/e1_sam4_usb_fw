@@ -34,6 +34,8 @@ struct e1_mgmt_irqstats {
 	unsigned int n_dblframes_bad_fas;
 };
 
+static struct e1_mgmt_irqstats e1_mgmt_irqstats;
+
 void
 e1_mgmt_init() {
 	int i;
@@ -61,7 +63,7 @@ e1_mgmt_init() {
  
 void
 e1_mgmt_rx_dblfrm_irq(uint32_t *p) {
-	e1_mgmt_irqstats.n_dblframes++;
+	e1_mgmt_irqstats.dblfrm++;
 
 	if (!(CHK_G704_FAS_LW(p[0]) && CHK_G704_NOFAS_LW(p[8]))) {
 		e1_mgmt_irqstats.n_dblframes_bad_fas;
