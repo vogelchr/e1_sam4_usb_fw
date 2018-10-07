@@ -30,7 +30,7 @@ const struct libusb_config_descriptor sam4s_usb_descr_cfg = {
 	.bDescriptorType = LIBUSB_DT_CONFIG,
 	.wTotalLength = sizeof(sam4s_usb_descr_cfg)+
 		sizeof(sam4s_usb_descr_int)+
-		sizeof(sam4s_usb_descr_ep1) +
+		sizeof(sam4s_usb_descr_ep1)+
 		sizeof(sam4s_usb_descr_ep2),
 	.bNumInterfaces = 1,
 	.bConfigurationValue = 1,
@@ -59,7 +59,7 @@ const struct libusb_endpoint_descriptor sam4s_usb_descr_ep1 = {
  	/* D1..0: xfer type: 0=control, 1=isochonous, 2=bulk, 3=interrupt,
 	   D3..2: isochr:    0=no sync, 1=async, 2=adaptive, 3=synchronous,
 	   D5..4: usage:     0=data, 1=feedback, 1:implicit feedback, 3: rsvd */
-	.bmAttributes = 2,
+	.bmAttributes = 0x0a, /* isochronous, adaptive */
 	.wMaxPacketSize = 512,
 	.bInterval = 1,
 };
@@ -68,7 +68,7 @@ const struct libusb_endpoint_descriptor sam4s_usb_descr_ep2 = {
 	.bLength = sizeof(sam4s_usb_descr_ep1),
 	.bDescriptorType = LIBUSB_DT_ENDPOINT,
 	.bEndpointAddress = 0x05, /* EP5 OUT */
-	.bmAttributes = 2,
+	.bmAttributes = 0x0a, /* isochronous, adaptive */
 	.wMaxPacketSize = 512,
 	.bInterval = 1,
 };
