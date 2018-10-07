@@ -173,7 +173,7 @@ sam4s_timer_init() {
 	 * We increment on the rising edge, because signals in SSC are sampled
 	 * on the *falling* edge. (check this!)
 	 *
-	 * We set the output on overflow and clear the output at 0, so it's
+	 * We set the output on RC=MAX and clear the output at RA=1, so it's
 	 * only on for one clock cycle.
 	 */
 
