@@ -80,13 +80,14 @@ sam4s_ssc_init_tx_dma() {
 void
 SSC_Handler()
 {
+	uint32_t sr = SSC->SSC_SR;
 	/* Receiver */
 	/* "current" rx buffer has finished receiving, but we have to submit
 	   the one after the next (rxbuf_submit) to keep the queue full */
-	if (SSC->SSC_SR & SSC_SR_ENDRX) {
+	if (sr & SSC_SR_ENDRX) {
 		int cp = sam4s_ssc_rx_curr_dblfrm;
 
-		if (SSC->SSC_SR & SSC_SR_RXBUFF) {
+		if (sr & SSC_SR_RXBUFF) {
 			/* should never happen! */
 			sam4s_ssc_irqstats.rx_overflow++;
 			sam4s_ssc_init_rx_dma();
@@ -110,10 +111,10 @@ SSC_Handler()
 		sam4s_pinmux_gpio_set(SAM4S_PINMUX_PA(25),sam4s_ssc_irqstats.rx_ctr & 1);
 	}
 
-	if (SSC->SSC_SR & SSC_SR_ENDTX) {
+	if (sr & SSC_SR_ENDTX) {
 		int cp = sam4s_ssc_tx_curr_dblfrm;
 
-		if (SSC->SSC_SR & SSC_SR_TXBUFE) {
+		if (sr & SSC_SR_TXBUFE) {
 			sam4s_ssc_irqstats.tx_underflow++;
 			sam4s_ssc_init_tx_dma();
 		}
